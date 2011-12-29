@@ -8,6 +8,7 @@
 
 #include <sys/types.h>
 #include <sys/dirent.h>
+#include <sys/vfs.h>
 
 /* devices are as follows: (same as minix, so we can use the minix
  * file system. These are major numbers.)
@@ -40,7 +41,7 @@ void buffer_init(long buffer_end);
 #define MAJOR(a) (((unsigned)(a))>>8)
 #define MINOR(a) ((a)&0xff)
 
-#define NR_OPEN 20
+#define NR_OPEN 32
 #define NR_INODE 128
 #define NR_FILE 64
 #define NR_SUPER 8
@@ -87,17 +88,17 @@ struct buffer_head {
 };
 
 struct inode {
-	dev_t	i_dev;
-	ino_t	i_ino;
-	umode_t	i_mode;
-	nlink_t	i_nlink;
-	uid_t	i_uid;
-	gid_t	i_gid;
-	dev_t	i_rdev;
-	off_t	i_size;
-	time_t	i_atime;
-	time_t	i_mtime;
-	time_t	i_ctime;
+	dev_t		i_dev;
+	unsigned long	i_ino;
+	umode_t		i_mode;
+	nlink_t		i_nlink;
+	uid_t		i_uid;
+	gid_t		i_gid;
+	dev_t		i_rdev;
+	off_t		i_size;
+	time_t		i_atime;
+	time_t		i_mtime;
+	time_t		i_ctime;
 	unsigned long i_data[16];
 	struct inode_operations * i_op;
 	struct super_block * i_sb;
@@ -135,12 +136,12 @@ typedef struct select_table_struct {
 } select_table;
 
 struct super_block {
-	unsigned short s_ninodes;
-	unsigned short s_nzones;
-	unsigned short s_imap_blocks;
-	unsigned short s_zmap_blocks;
-	unsigned short s_firstdatazone;
-	unsigned short s_log_zone_size;
+	unsigned long s_ninodes;
+	unsigned long s_nzones;
+	unsigned long s_imap_blocks;
+	unsigned long s_zmap_blocks;
+	unsigned long s_firstdatazone;
+	unsigned long s_log_zone_size;
 	unsigned long s_max_size;
 	unsigned short s_magic;
 /* These are only in memory */
@@ -191,6 +192,7 @@ struct super_operations {
 	void (*write_inode) (struct inode *inode);
 	void (*put_inode) (struct inode *inode);
 	void (*put_super)(struct super_block *sb);
+	void (*statfs) (struct super_block *sb, struct statfs *buf);
 };
 
 struct file_system_type {
@@ -224,6 +226,7 @@ extern struct inode * _namei(const char * filename, struct inode * base,
 	int follow_links);
 extern int open_namei(const char * pathname, int flag, int mode,
 	struct inode ** res_inode);
+extern int do_mknod(const char * filename, int mode, int dev);
 extern void iput(struct inode * inode);
 extern struct inode * iget(int dev,int nr);
 extern struct inode * get_empty_inode(void);

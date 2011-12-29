@@ -9,7 +9,7 @@
  *
  * This module implements the rs232 io functions
  *	void rs_write(struct tty_struct * queue);
- *	void rs_init(void);
+ *	long rs_init(long);
  * and all interrupts pertaining to serial IO.
  */
 
@@ -27,12 +27,32 @@
 extern void IRQ3_interrupt(void);
 extern void IRQ4_interrupt(void);
 
+#define PORT_UNKNOWN	0
+#define PORT_8250	1
+#define PORT_16450	2
+#define PORT_16550	3
+#define PORT_16550A	4
+
+int port_table[] = {
+	PORT_UNKNOWN,
+	PORT_UNKNOWN,
+	PORT_UNKNOWN,
+	PORT_UNKNOWN,
+	PORT_UNKNOWN
+};	
+
 static void modem_status_intr(unsigned line, unsigned port, struct tty_struct * tty)
 {
 	unsigned char status = inb(port+6);
 
 	if ((status & 0x88) == 0x08 && tty->pgrp > 0)
 		kill_pg(tty->pgrp,SIGHUP,1);
+#if 0
+	if ((status & 0x10) == 0x10)
+		tty->stopped = 0;
+	else
+		tty->stopped = 1;
+#endif
 }
 
 /*
@@ -46,13 +66,17 @@ static void modem_status_intr(unsigned line, unsigned port, struct tty_struct * 
  */
 static void send_intr(unsigned line, unsigned port, struct tty_struct * tty)
 {
-	int c;
+	int c, i = 0;
 
 #define TIMER ((SER1_TIMEOUT-1)+line)
 	timer_active &= ~(1 << TIMER);
-	if ((c = GETCH(tty->write_q)) < 0)
-		return;
-	outb(c,port);
+	do {
+		if ((c = GETCH(tty->write_q)) < 0)
+			return;
+		outb(c,port);
+		i++;
+	} while ( port_table[line] == PORT_16550A &&
+		  i < 14 && !EMPTY(tty->write_q));
 	timer_table[TIMER].expires = jiffies + 10;
 	timer_active |= 1 << TIMER;
 	if (LEFT(tty->write_q) > WAKEUP_CHARS)
@@ -62,9 +86,11 @@ static void send_intr(unsigned line, unsigned port, struct tty_struct * tty)
 
 static void receive_intr(unsigned line, unsigned port, struct tty_struct * tty)
 {
-	if (FULL(tty->read_q))
-		return;
-	PUTCH(inb(port),tty->read_q);
+	while (!FULL(tty->read_q)) {
+		if (!(inb(port+5) & 1))
+			break;
+		PUTCH(inb(port),tty->read_q);
+	};
 	timer_active |= (1<<(SER1_TIMER-1))<<line;
 }
 
@@ -90,7 +116,7 @@ static void check_tty(unsigned line,struct tty_struct * tty)
 	if (!(port = tty->read_q->data))
 		return;
 	while (1) {
-		ident = inb(port+2);
+		ident = inb(port+2) & 7;
 		if (ident & 1)
 			return;
 		ident >>= 1;
@@ -110,7 +136,7 @@ void do_IRQ3(void)
 }
 
 /*
- * IRQ4 normally handles com1 and com2
+ * IRQ4 normally handles com1 and com3
  */
 void do_IRQ4(void)
 {
@@ -182,8 +208,43 @@ static void com4_timeout(void)
 	do_rs_write(4,tty_table+67);
 }
 
-static void init(int port)
+static void init(int port, int line)
 {
+	unsigned char status1, status2, scratch;
+
+	if (inb(port+5) == 0xff) {
+		port_table[line] = PORT_UNKNOWN;
+		return;
+	}
+	
+	scratch = inb(port+7);
+	outb_p(0xa5, port+7);
+	status1 = inb(port+7);
+	outb_p(0x5a, port+7);
+	status2 = inb(port+7);
+	if (status1 == 0xa5 && status2 == 0x5a) {
+		outb_p(scratch, port+7);
+		outb_p(0x01, port+2);
+		scratch = inb(port+2) >> 6;
+		switch (scratch) {
+			case 0:  printk("serial port at 0x%04x is a 16450\n", port);
+				 port_table[line] = PORT_16450;
+				 break;
+			case 1:  printk("serial port at 0x%04x is unknown\n", port);
+				 port_table[line] = PORT_UNKNOWN;
+				 break;
+			case 2:  printk("serial port at 0x%04x is a 16550 (FIFO's disabled)\n", port);
+				 port_table[line] = PORT_16550;
+				 outb_p(0x00, port+2);
+				 break;
+			case 3:  printk("serial port at 0x%04x is a 16550a (FIFO's enabled)\n", port);
+				 port_table[line] = PORT_16550A;
+				 outb_p(0xc7, port+2);
+				 break;
+		}
+	} else
+		printk("serial port at 0x%04x is a 8250\n", port);
+	
 	outb_p(0x80,port+3);	/* set DLAB of line control reg */
 	outb_p(0x30,port);	/* LS of divisor (48 -> 2400 bps */
 	outb_p(0x00,port+1);	/* MS of divisor */
@@ -221,7 +282,7 @@ void serial_open(unsigned line)
 	sti();
 }
 
-void rs_init(void)
+long rs_init(long kmem_start)
 {
 /* SERx_TIMER timers are used for receiving: timeout is always 0 (immediate) */
 	timer_table[SER1_TIMER].fn = com1_timer;
@@ -243,11 +304,12 @@ void rs_init(void)
 	timer_table[SER4_TIMEOUT].expires = 0;
 	set_intr_gate(0x23,IRQ3_interrupt);
 	set_intr_gate(0x24,IRQ4_interrupt);
-	init(tty_table[64].read_q->data);
-	init(tty_table[65].read_q->data);
-	init(tty_table[66].read_q->data);
-	init(tty_table[67].read_q->data);
+	init(tty_table[64].read_q->data, 1);
+	init(tty_table[65].read_q->data, 2);
+	init(tty_table[66].read_q->data, 3);
+	init(tty_table[67].read_q->data, 4);
 	outb(inb_p(0x21)&0xE7,0x21);
+	return kmem_start;
 }
 
 /*

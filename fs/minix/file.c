@@ -1,14 +1,15 @@
 /*
- * linux/fs/minix/file.c
+ *  linux/fs/minix/file.c
  *
- * minix regular file handling primitives
+ *  (C) 1991 Linus Torvalds
+ *
+ *  minix regular file handling primitives
  */
 
 #include <errno.h>
 #include <fcntl.h>
 
 #include <sys/dirent.h>
-#include <sys/stat.h>
 
 #include <asm/segment.h>
 #include <asm/system.h>
@@ -16,6 +17,7 @@
 #include <linux/sched.h>
 #include <linux/minix_fs.h>
 #include <linux/kernel.h>
+#include <linux/stat.h>
 
 #define	NBUF	16
 
@@ -212,10 +214,8 @@ static int minix_file_write(struct inode * inode, struct file * filp, char * buf
 		brelse(bh);
 	}
 	inode->i_mtime = CURRENT_TIME;
-	if (!(filp->f_flags & O_APPEND)) {
-		filp->f_pos = pos;
-		inode->i_ctime = CURRENT_TIME;
-	}
+	inode->i_ctime = CURRENT_TIME;
+	filp->f_pos = pos;
 	inode->i_dirt = 1;
 	return written;
 }

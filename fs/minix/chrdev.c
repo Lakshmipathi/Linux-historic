@@ -1,5 +1,5 @@
 /*
- *  linux/fs/chrdev.c
+ *  linux/fs/minix/chrdev.c
  *
  *  (C) 1991  Linus Torvalds
  */
@@ -7,10 +7,10 @@
 #include <linux/sched.h>
 #include <linux/minix_fs.h>
 #include <linux/tty.h>
+#include <linux/stat.h>
 
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/stat.h>
 
 /*
  * Called every time a minix character special file is opened

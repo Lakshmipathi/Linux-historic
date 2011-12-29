@@ -49,11 +49,15 @@ static int pipe_write(struct inode * inode, struct file * filp, char * buf, int 
 {
 	int chars, size, written = 0;
 
+	if (inode->i_count != 2) { /* no readers */
+		send_sig(SIGPIPE,current,0);
+		return -EINTR;
+	}
 	while (count>0) {
 		while (!(size=(PAGE_SIZE-1)-PIPE_SIZE(*inode))) {
 			wake_up(& PIPE_READ_WAIT(*inode));
 			if (inode->i_count != 2) { /* no readers */
-				current->signal |= (1<<(SIGPIPE-1));
+				send_sig(SIGPIPE,current,0);
 				return written?written:-EINTR;
 			}
 			if (current->signal & ~current->blocked)
@@ -146,6 +150,7 @@ int sys_pipe(unsigned long * fildes)
 	int fd[2];
 	int i,j;
 
+	verify_area(fildes,8);
 	j=0;
 	for(i=0;j<2 && i<NR_FILE;i++)
 		if (!file_table[i].f_count)
@@ -174,6 +179,7 @@ int sys_pipe(unsigned long * fildes)
 	}
 	f[0]->f_inode = f[1]->f_inode = inode;
 	f[0]->f_pos = f[1]->f_pos = 0;
+	f[0]->f_flags = f[1]->f_flags = 0;
 	f[0]->f_op = &read_pipe_fops;
 	f[0]->f_mode = 1;		/* read */
 	f[1]->f_op = &write_pipe_fops;

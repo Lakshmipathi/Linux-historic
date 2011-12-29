@@ -149,44 +149,39 @@ extern inline void unlock_buffer(struct buffer_head * bh)
 	wake_up(&bh->b_wait);
 }
 
-extern inline void next_buffer(int uptodate)
+static void end_request(int uptodate)
 {
-	struct buffer_head *tmp;
+	struct request * req;
+	struct buffer_head * bh;
 
-	CURRENT->bh->b_uptodate = uptodate;
-	unlock_buffer(CURRENT->bh);
+	req = CURRENT;
+	req->errors = 0;
 	if (!uptodate) {
 		printk(DEVICE_NAME " I/O error\n\r");
-		printk("dev %04x, block %d\n\r",CURRENT->dev,
-			CURRENT->bh->b_blocknr);
+		printk("dev %04x, sector %d\n\r",req->dev,req->sector);
+		req->nr_sectors--;
+		req->nr_sectors &= ~1;
+		req->sector += 2;
+		req->sector &= ~1;		
 	}
-	tmp = CURRENT->bh;
-	CURRENT->bh = CURRENT->bh->b_reqnext;
-	tmp->b_reqnext = NULL;
-	if (!CURRENT->bh)
-		panic("next_buffer: request buffer list destroyed\r\n");
-	CURRENT->buffer = CURRENT->bh->b_data;
-	CURRENT->errors = 0;
-}
-
-extern inline void end_request(int uptodate)
-{
-	struct request * tmp;
-
-	tmp = CURRENT;
-	DEVICE_OFF(tmp->dev);
-	CURRENT = tmp->next;
-	if (tmp->bh) {
-		tmp->bh->b_uptodate = uptodate;
-		unlock_buffer(tmp->bh);
+	if (bh = req->bh) {
+		req->bh = bh->b_reqnext;
+		bh->b_reqnext = NULL;
+		bh->b_uptodate = uptodate;
+		unlock_buffer(bh);
+		if (bh = req->bh) {
+			if (req->nr_sectors < 2) {
+				req->nr_sectors = 2;
+				printk("end_request: buffer-list destroyed\n");
+			}
+			req->buffer = bh->b_data;
+			return;
+		}
 	}
-	if (!uptodate) {
-		printk(DEVICE_NAME " I/O error\n\r");
-		printk("dev %04x, block %d\n\r",tmp->dev,
-			tmp->bh->b_blocknr);
-	}
-	wake_up(&tmp->waiting);
-	tmp->dev = -1;
+	DEVICE_OFF(req->dev);
+	CURRENT = req->next;
+	wake_up(&req->waiting);
+	req->dev = -1;
 	wake_up(&wait_for_request);
 }
 

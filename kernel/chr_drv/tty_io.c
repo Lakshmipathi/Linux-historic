@@ -11,32 +11,34 @@
  * Kill-line thanks to John T Kohl, who also corrected VMIN = VTIME = 0.
  */
 
-#include <linux/ctype.h>
 #include <errno.h>
 #include <signal.h>
-#include <unistd.h>
 #include <fcntl.h>
 
 #define ALRMMASK (1<<(SIGALRM-1))
 
 #include <linux/sched.h>
 #include <linux/tty.h>
+#include <linux/ctype.h>
 #include <asm/io.h>
 #include <asm/segment.h>
 #include <asm/system.h>
+
+#include <sys/kd.h>
+#include "vt_kern.h"
 
 #ifndef MIN
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
-#define QUEUES	(3*(MAX_CONSOLES+NR_SERIALS+2*NR_PTYS))
-static struct tty_queue tty_queues[QUEUES];
+#define QUEUES	(3*(NR_CONSOLES+NR_SERIALS+2*NR_PTYS))
+static struct tty_queue * tty_queues;
 struct tty_struct tty_table[256];
 
 #define con_queues tty_queues
-#define rs_queues ((3*MAX_CONSOLES) + tty_queues)
-#define mpty_queues ((3*(MAX_CONSOLES+NR_SERIALS)) + tty_queues)
-#define spty_queues ((3*(MAX_CONSOLES+NR_SERIALS+NR_PTYS)) + tty_queues)
+#define rs_queues ((3*NR_CONSOLES) + tty_queues)
+#define mpty_queues ((3*(NR_CONSOLES+NR_SERIALS)) + tty_queues)
+#define spty_queues ((3*(NR_CONSOLES+NR_SERIALS+NR_PTYS)) + tty_queues)
 
 #define con_table tty_table
 #define rs_table (64+tty_table)
@@ -55,16 +57,12 @@ struct tty_struct * redirect = NULL;
  * these are the tables used by the machine code handlers.
  * you can implement virtual consoles.
  */
-struct tty_queue * table_list[]={
-	con_queues + 0, con_queues + 1,
-	rs_queues + 0, rs_queues + 1,
-	rs_queues + 3, rs_queues + 4,
-	rs_queues + 6, rs_queues + 7,
-	rs_queues + 9, rs_queues + 10
-};
+struct tty_queue * table_list[] = { NULL, NULL };
 
 void change_console(unsigned int new_console)
 {
+	if (vt_cons[fg_console].vt_mode == KD_GRAPHICS)
+		return;
 	if (new_console == fg_console || new_console >= NR_CONSOLES)
 		return;
 	table_list[0] = con_queues + 0 + new_console*3;
@@ -116,34 +114,44 @@ void copy_to_cooked(struct tty_struct * tty)
 		if (I_UCLC(tty))
 			c=tolower(c);
 		if (L_CANON(tty)) {
-			if ((KILL_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((KILL_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==KILL_CHAR(tty))) {
 				/* deal with killing the input line */
 				while(!(EMPTY(tty->secondary) ||
 					(c=LAST(tty->secondary))==10 ||
-					((EOF_CHAR(tty) != _POSIX_VDISABLE) &&
+					((EOF_CHAR(tty) != __DISABLED_CHAR) &&
 					 (c==EOF_CHAR(tty))))) {
 					if (L_ECHO(tty)) {
-						if (c<32)
-							PUTCH(127,tty->write_q);
-						PUTCH(127,tty->write_q);
+						if (c<32) {
+							PUTCH(8,tty->write_q);
+							PUTCH(' ',tty->write_q);
+							PUTCH(8,tty->write_q);
+						}
+						PUTCH(8,tty->write_q);
+						PUTCH(' ',tty->write_q);
+						PUTCH(8,tty->write_q);
 						TTY_WRITE_FLUSH(tty);
 					}
 					DEC(tty->secondary->head);
 				}
 				continue;
 			}
-			if ((ERASE_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((ERASE_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==ERASE_CHAR(tty))) {
 				if (EMPTY(tty->secondary) ||
 				   (c=LAST(tty->secondary))==10 ||
-				   ((EOF_CHAR(tty) != _POSIX_VDISABLE) &&
+				   ((EOF_CHAR(tty) != __DISABLED_CHAR) &&
 				    (c==EOF_CHAR(tty))))
 					continue;
 				if (L_ECHO(tty)) {
-					if (c<32)
-						PUTCH(127,tty->write_q);
-					PUTCH(127,tty->write_q);
+					if (c<32) {
+						PUTCH(8,tty->write_q);
+						PUTCH(' ',tty->write_q);
+						PUTCH(8,tty->write_q);
+					}
+					PUTCH(8,tty->write_q);
+					PUTCH(32,tty->write_q);
+					PUTCH(8,tty->write_q);
 					TTY_WRITE_FLUSH(tty);
 				}
 				DEC(tty->secondary->head);
@@ -151,12 +159,12 @@ void copy_to_cooked(struct tty_struct * tty)
 			}
 		}
 		if (I_IXON(tty)) {
-			if ((STOP_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((STOP_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==STOP_CHAR(tty))) {
 				tty->stopped=1;
 				continue;
 			}
-			if ((START_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((START_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==START_CHAR(tty))) {
 				tty->stopped=0;
 				TTY_WRITE_FLUSH(tty);
@@ -164,27 +172,29 @@ void copy_to_cooked(struct tty_struct * tty)
 			}
 		}
 		if (L_ISIG(tty)) {
-			if ((INTR_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((INTR_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==INTR_CHAR(tty))) {
 				kill_pg(tty->pgrp, SIGINT, 1);
+				flush_input(tty);
 				continue;
 			}
-			if ((QUIT_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((QUIT_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==QUIT_CHAR(tty))) {
 				kill_pg(tty->pgrp, SIGQUIT, 1);
+				flush_input(tty);
 				continue;
 			}
-			if ((SUSPEND_CHAR(tty) != _POSIX_VDISABLE) &&
+			if ((SUSPEND_CHAR(tty) != __DISABLED_CHAR) &&
 			    (c==SUSPEND_CHAR(tty))) {
 				if (!is_orphaned_pgrp(tty->pgrp))
 					kill_pg(tty->pgrp, SIGTSTP, 1);
 				continue;
 			}
 		}
-		if (c==10 || (EOF_CHAR(tty) != _POSIX_VDISABLE &&
+		if (c==10 || (EOF_CHAR(tty) != __DISABLED_CHAR &&
 		    c==EOF_CHAR(tty)))
 			tty->secondary->data++;
-		if ((L_ECHO(tty) || L_ECHONL(tty)) && (c==10)) {
+		if ((L_ECHO(tty) || (L_CANON(tty) && L_ECHONL(tty))) && (c==10)) {
 			PUTCH(10,tty->write_q);
 			PUTCH(13,tty->write_q);
 		} else if (L_ECHO(tty)) {
@@ -296,10 +306,10 @@ static int read_chan(unsigned int channel, struct file * file, char * buf, int n
 		sti();
 		do {
 			c = GETCH(tty->secondary);
-			if ((EOF_CHAR(tty) != _POSIX_VDISABLE &&
+			if ((EOF_CHAR(tty) != __DISABLED_CHAR &&
 			     c==EOF_CHAR(tty)) || c==10)
 				tty->secondary->data--;
-			if ((EOF_CHAR(tty) != _POSIX_VDISABLE &&
+			if ((EOF_CHAR(tty) != __DISABLED_CHAR &&
 			     c==EOF_CHAR(tty)) && L_CANON(tty))
 				break;
 			else {
@@ -528,10 +538,14 @@ static struct file_operations ttyx_fops = {
 	tty_release
 };
 
-void tty_init(void)
+long tty_init(long kmem_start)
 {
 	int i;
 
+	tty_queues = (struct tty_queue *) kmem_start;
+	kmem_start += QUEUES * (sizeof (struct tty_queue));
+	table_list[0] = con_queues + 0;
+	table_list[1] = con_queues + 1;
 	chrdev_fops[4] = &ttyx_fops;
 	chrdev_fops[5] = &tty_fops;
 	for (i=0 ; i < QUEUES ; i++)
@@ -551,7 +565,7 @@ void tty_init(void)
 			NULL, NULL, NULL, NULL
 		};
 	}
-	con_init();
+	kmem_start = con_init(kmem_start);
 	for (i = 0 ; i<NR_CONSOLES ; i++) {
 		con_table[i] = (struct tty_struct) {
 		 	{ICRNL,		/* change incoming CR to NL */
@@ -622,7 +636,8 @@ void tty_init(void)
 			spty_queues+0+i*3,spty_queues+1+i*3,spty_queues+2+i*3
 		};
 	}
-	rs_init();
+	kmem_start = rs_init(kmem_start);
 	printk("%d virtual consoles\n\r",NR_CONSOLES);
 	printk("%d pty's\n\r",NR_PTYS);
+	return kmem_start;
 }

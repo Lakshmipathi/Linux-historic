@@ -9,9 +9,9 @@
 #include <sys/types.h>
 #include <utime.h>
 
-#include <sys/stat.h>
 #include <sys/vfs.h>
 
+#include <linux/stat.h>
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -33,14 +33,34 @@ int sys_ustat(int dev, struct ustat * ubuf)
 
 int sys_statfs(const char * path, struct statfs * buf)
 {
-	printk("statfs not implemented\n");
-	return -ENOSYS;
+	struct inode * inode;
+
+	verify_area(buf, sizeof(struct statfs));
+	if (!(inode = namei(path)))
+		return -ENOENT;
+	if (!inode->i_sb->s_op->statfs) {
+		iput(inode);
+		return -ENOSYS;
+	}
+	inode->i_sb->s_op->statfs(inode->i_sb, buf);
+	iput(inode);
+	return 0;
 }
 
 int sys_fstatfs(unsigned int fd, struct statfs * buf)
 {
-	printk("fstatfs not implemented\n");
-	return -ENOSYS;
+	struct inode * inode;
+	struct file * file;
+
+	verify_area(buf, sizeof(struct statfs));
+	if (fd >= NR_OPEN || !(file = current->filp[fd]))
+		return -EBADF;
+	if (!(inode = file->f_inode))
+		return -ENOENT;
+	if (!inode->i_sb->s_op->statfs)
+		return -ENOSYS;
+	inode->i_sb->s_op->statfs(inode->i_sb, buf);
+	return 0;
 }
 
 int sys_truncate(const char * path, unsigned int length)
@@ -121,8 +141,8 @@ int sys_access(const char * filename,int mode)
 	iput(inode);
 	if (current->uid == inode->i_uid)
 		res >>= 6;
-	else if (current->gid == inode->i_gid)
-		res >>= 6;
+	else if (in_group_p(inode->i_gid))
+		res >>= 3;
 	if ((res & 0007 & mode) == mode)
 		return 0;
 	/*
@@ -256,13 +276,13 @@ int sys_open(const char * filename,int flag,int mode)
 		if (!current->filp[fd])
 			break;
 	if (fd>=NR_OPEN)
-		return -EINVAL;
+		return -EMFILE;
 	current->close_on_exec &= ~(1<<fd);
 	f=0+file_table;
 	for (i=0 ; i<NR_FILE ; i++,f++)
 		if (!f->f_count) break;
 	if (i>=NR_FILE)
-		return -EINVAL;
+		return -ENFILE;
 	(current->filp[fd] = f)->f_count++;
 	if ((i = open_namei(filename,flag,mode,&inode))<0) {
 		current->filp[fd]=NULL;

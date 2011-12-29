@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 
-#include <sys/stat.h>
+#include <linux/stat.h>
 
 #include <asm/segment.h>
 
@@ -37,6 +37,8 @@ static int dupfd(unsigned int fd, unsigned int arg)
 
 int sys_dup2(unsigned int oldfd, unsigned int newfd)
 {
+	if (oldfd >= NR_OPEN || !current->filp[oldfd])
+		return -EBADF;
 	if (newfd == oldfd)
 		return newfd;
 	sys_close(newfd);

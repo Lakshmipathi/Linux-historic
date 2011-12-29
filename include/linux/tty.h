@@ -11,11 +11,16 @@
 
 #include <asm/system.h>
 
-#define MAX_CONSOLES	8
+#define NR_CONSOLES	8
 #define NR_SERIALS	4
 #define NR_PTYS		4
 
-extern int NR_CONSOLES;
+/*
+ * This character is the same as _POSIX_VDISABLE: it cannot be used as
+ * a c_cc[] character, but indicates that a particular special character
+ * isn't in use (eg VINTR ahs no character etc)
+ */
+#define __DISABLED_CHAR '\0'
 
 #include <termios.h>
 
@@ -173,12 +178,12 @@ extern unsigned long video_num_lines;
 */
 #define INIT_C_CC "\003\034\177\025\004\0\1\0\021\023\032\0\022\017\027\026\0"
 
-extern void rs_init(void);
-extern void lp_init(void);
-extern void con_init(void);
-extern void tty_init(void);
+extern long rs_init(long);
+extern long lp_init(long);
+extern long con_init(long);
+extern long tty_init(long);
 
-extern void flush(struct tty_queue * queue);
+extern void flush_input(struct tty_struct * tty);
 
 extern int tty_ioctl(struct inode *, struct file *, unsigned int, unsigned int);
 extern int is_orphaned_pgrp(int pgrp);
@@ -195,6 +200,8 @@ extern void serial_open(unsigned int line);
 void copy_to_cooked(struct tty_struct * tty);
 
 void update_screen(int new_console);
+void blank_screen(void);
+void unblank_screen(void);
 
 int kill_pg(int pgrp, int sig, int priv);
    

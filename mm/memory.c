@@ -565,7 +565,7 @@ static int share_page(struct inode * inode, unsigned long address)
 	struct task_struct ** p;
 	int i;
 
-	if (inode->i_count < 2 || !inode)
+	if (!inode || inode->i_count < 2)
 		return 0;
 	for (p = &LAST_TASK ; p > &FIRST_TASK ; --p) {
 		if (!*p)
@@ -716,6 +716,9 @@ void mem_init(long start_mem, long end_mem)
 {
 	int i;
 
+	end_mem &= 0xfffff000;
+	start_mem += 0xfff;
+	start_mem &= 0xfffff000;
 	swap_device = 0;
 	swap_file = NULL;
 	HIGH_MEMORY = end_mem;

@@ -119,22 +119,25 @@ struct task_struct {
 	long blocked;	/* bitmap of masked signals */
 /* various fields */
 	int exit_code;
+	int dumpable;
 	unsigned long start_code,end_code,end_data,brk,start_stack;
 	long pid,pgrp,session,leader;
 	int	groups[NGROUPS];
 	/* 
-	 * pointers to parent process, youngest child, younger sibling,
+	 * pointers to (original) parent process, youngest child, younger sibling,
 	 * older sibling, respectively.  (p->father can be replaced with 
 	 * p->p_pptr->pid)
 	 */
-	struct task_struct *p_pptr, *p_cptr, *p_ysptr, *p_osptr;
+	struct task_struct *p_opptr,*p_pptr, *p_cptr, *p_ysptr, *p_osptr;
 	/*
 	 * sleep makes a singly linked list with this.
 	 */
 	struct task_struct *next_wait;
 	unsigned short uid,euid,suid;
 	unsigned short gid,egid,sgid;
-	unsigned long timeout,alarm;
+	unsigned long timeout;
+	unsigned long it_real_value, it_prof_value, it_virt_value;
+	unsigned long it_real_incr, it_prof_incr, it_virt_incr;
 	long utime,stime,cutime,cstime,start_time;
 	unsigned long min_flt, maj_flt;
 	unsigned long cmin_flt, cmaj_flt;
@@ -181,12 +184,12 @@ struct task_struct {
 #define INIT_TASK \
 /* state etc */	{ 0,15,15, \
 /* signals */	0,{{},},0, \
-/* ec,brk... */	0,0,0,0,0,0, \
+/* ec,brk... */	0,0,0,0,0,0,0, \
 /* pid etc.. */	0,0,0,0, \
 /* suppl grps*/ {NOGROUP,}, \
-/* proc links*/ &init_task.task,NULL,NULL,NULL,NULL, \
+/* proc links*/ &init_task.task,&init_task.task,NULL,NULL,NULL,NULL, \
 /* uid etc */	0,0,0,0,0,0, \
-/* timeout */	0,0,0,0,0,0,0, \
+/* timeout */	0,0,0,0,0,0,0,0,0,0,0,0, \
 /* min_flt */	0,0,0,0, \
 /* rlimits */   { {0x7fffffff, 0x7fffffff}, {0x7fffffff, 0x7fffffff},  \
 		  {0x7fffffff, 0x7fffffff}, {0x7fffffff, 0x7fffffff}, \
@@ -316,5 +319,19 @@ static unsigned long inline get_limit(unsigned long segment)
 		:"=r" (__limit):"r" (segment));
 	return __limit+1;
 }
+
+#define REMOVE_LINKS(p) \
+	if ((p)->p_osptr) \
+		(p)->p_osptr->p_ysptr = (p)->p_ysptr; \
+	if ((p)->p_ysptr) \
+		(p)->p_ysptr->p_osptr = (p)->p_osptr; \
+	else \
+		(p)->p_pptr->p_cptr = (p)->p_osptr
+
+#define SET_LINKS(p) \
+	(p)->p_ysptr = NULL; \
+	if ((p)->p_osptr = (p)->p_pptr->p_cptr) \
+		(p)->p_osptr->p_ysptr = p; \
+	(p)->p_pptr->p_cptr = p
 
 #endif

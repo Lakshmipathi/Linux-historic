@@ -1,18 +1,19 @@
 /*
- * linux/fs/minix/symlink.c
+ *  linux/fs/minix/symlink.c
  *
- * minix symlink handling code
+ *  (C) 1991 Linus Torvalds
+ *
+ *  minix symlink handling code
  */
 
 #include <errno.h>
-
-#include <sys/stat.h>
 
 #include <asm/segment.h>
 
 #include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/minix_fs.h>
+#include <linux/stat.h>
 
 static int minix_readlink(struct inode *, char *, int);
 static struct inode * minix_follow_link(struct inode *, struct inode *);
