@@ -40,8 +40,11 @@
 #include <asm/system.h>
 #include <asm/segment.h>
 
-#include <string.h>
+#include <linux/string.h>
 #include <errno.h>
+
+#include <sys/kd.h>
+#include "vt_kern.h"
 
 #define DEF_TERMIOS \
 (struct termios) { \
@@ -79,11 +82,14 @@ static void unblank_screen(void);
 
 int NR_CONSOLES = 0;
 
+extern void vt_init(void);
 extern void keyboard_interrupt(void);
 extern void set_leds(void);
 extern unsigned char kapplic;
 extern unsigned char kleds;
 extern unsigned char kmode;
+extern unsigned char kraw;
+extern unsigned char ke0;
 
 unsigned long	video_num_columns;		/* Number of text columns	*/
 unsigned long	video_num_lines;		/* Number of test lines		*/
@@ -118,9 +124,9 @@ static struct {
 	unsigned int	vc_saved_y;
 	unsigned int	vc_iscolor;
 	unsigned char	vc_kbdapplic;
-	unsigned char   vc_kbdleds;
 	unsigned char	vc_kbdmode;
 	char *		vc_translate;
+	/* additional information is in vt_kern.h */
 } vc_cons [MAX_CONSOLES];
 
 #define MEM_BUFFER_SIZE (2*80*50*8) 
@@ -153,7 +159,9 @@ static int console_blanked = 0;
 #define iscolor		(vc_cons[currcons].vc_iscolor)
 #define kbdapplic	(vc_cons[currcons].vc_kbdapplic)
 #define kbdmode		(vc_cons[currcons].vc_kbdmode)
-#define kbdleds		(vc_cons[currcons].vc_kbdleds)
+#define kbdraw		(vt_cons[currcons].vc_kbdraw)
+#define kbde0		(vt_cons[currcons].vc_kbde0)
+#define kbdleds		(vt_cons[currcons].vc_kbdleds)
 
 int blankinterval = 5*60*HZ;
 static int screen_size = 0;
@@ -167,20 +175,35 @@ static void sysbeep(void);
 #define RESPONSE "\033[?1;2c"
 
 static char * translations[] = {
-/* normal 7-bit ascii */
+/* 8-bit Latin-1 mapped to the PC charater set: '\0' means non-printable */
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 	" !\"#$%&'()*+,-./0123456789:;<=>?"
 	"@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"
-	"`abcdefghijklmnopqrstuvwxyz{|}~ ",
+	"`abcdefghijklmnopqrstuvwxyz{|}~\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\040\255\233\234\376\235\174\025\376\376\246\256\252\055\376\376"
+	"\370\361\375\376\376\346\024\371\376\376\247\257\254\253\376\250"
+	"\376\376\376\376\216\217\222\200\376\220\376\376\376\376\376\376"
+	"\376\245\376\376\376\376\231\376\376\376\376\376\232\376\376\341"
+	"\205\240\203\376\204\206\221\207\212\202\210\211\215\241\214\213"
+	"\376\244\225\242\223\376\224\366\376\227\243\226\201\376\376\230",
 /* vt100 graphics */
-	" !\"#$%&'()*+,-./\333123456789:;<=>?"
-	"@ABCDEFGH\017JKLMNOPQRSTUVWXYZ[\\]^ "
-	/* '   a   b   c   d   e   f   g   h   i   j   k   l   m   n   o */
-	"\004\261\007\007\007\007\370\361\040\007\331\277\332\300\305\007"
-	/* p   q   r   s   t   u   v   w   x   y   z   {   |   }   ~     */
-	"\007\304\007\007\303\264\301\302\263\007\007\007\007\007\234 "
-	
-      /*"\004\261\007\007\007\007\370\361\007\007\275\267\326\323\327\304"
-        "\304\304\304\304\307\266\320\322\272\363\362\343\\007\234\007 " */
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	" !\"#$%&'()*+,-./0123456789:;<=>?"
+	"@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^ "
+	"\004\261\007\007\007\007\370\361\007\007\275\267\326\323\327\304"
+	"\304\304\304\304\307\266\320\322\272\363\362\343\007\234\007\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+	"\040\255\233\234\376\235\174\025\376\376\246\256\252\055\376\376"
+	"\370\361\375\376\376\346\024\371\376\376\247\257\254\253\376\250"
+	"\376\376\376\376\216\217\222\200\376\220\376\376\376\376\376\376"
+	"\376\245\376\376\376\376\231\376\376\376\376\376\232\376\376\341"
+	"\205\240\203\376\204\206\221\207\212\202\210\211\215\241\214\213"
+	"\376\244\225\242\223\376\224\366\376\227\243\226\201\376\376\230"
 };
 
 #define NORM_TRANS (translations[0])
@@ -394,10 +417,10 @@ static void csi_m(int currcons )
 			  else
 			  { /* check if forground == background */
 			    if (vc_cons[currcons].vc_bold_attr != -1)
-			      attr = (vc_cons[currcons].vc_bold_attr&0x0f)|(0xf0&(attr));
+				attr = (vc_cons[currcons].vc_bold_attr&0x0f)|(0xf0&(attr));
 			    else
 			    { short newattr = (attr&0xf0)|(0xf&(~attr));
-			      attr = ((newattr&0xf)==((attr>>4)&0xf)? 
+				attr = ((newattr&0xf)==((attr>>4)&0xf)? 
 			        (attr&0xf0)|(((attr&0xf)+1)%0xf):
 			        newattr);
 			    }    
@@ -450,13 +473,11 @@ static void respond(int currcons, struct tty_struct * tty)
 {
 	char * p = RESPONSE;
 
-	cli();
 	while (*p) {
 		PUTCH(*p,tty->read_q);
 		p++;
 	}
-	sti();
-	copy_to_cooked(tty);
+	TTY_READ_FLUSH(tty);
 }
 
 static void insert_char(int currcons)
@@ -554,7 +575,7 @@ enum { ESnormal, ESesc, ESsquare, ESgetpars, ESgotpars, ESfunckey,
 
 void con_write(struct tty_struct * tty)
 {
-	unsigned char c;
+	int c;
 	unsigned int currcons;
 
 	wake_up(&tty->write_q->proc_list);
@@ -563,21 +584,23 @@ void con_write(struct tty_struct * tty)
 		printk("con_write: illegal tty\n\r");
 		return;
 	}
-	while (!EMPTY(tty->write_q)) {
-		if (tty->stopped)
-			break;
-		GETCH(tty->write_q,c);
+	if (vt_cons[currcons].vt_mode == KD_GRAPHICS) {
+		flush(tty->write_q);
+		return;			/* no output in graphics mode */
+	}
+	while (!tty->stopped &&	(c = GETCH(tty->write_q)) >= 0) {
 		if (c == 24 || c == 26)
 			state = ESnormal;
 		switch(state) {
 			case ESnormal:
-				if (c > 31 && c < 127) {
+				if (translate[c]) {
+					c = translate[c];
 					while (x >= video_num_columns) {
 						x -= video_num_columns;
 						pos -= video_size_row;
 						lf(currcons);
 					}
-					*(char *) pos = translate[c-32];
+					*(char *) pos = c;
 					*(char *) (pos+1) = attr;
 					pos += 2;
 					x++;
@@ -762,6 +785,7 @@ void con_write(struct tty_struct * tty)
 						    par[1] <= video_num_lines) {
 							top=par[0];
 							bottom=par[1];
+							gotoxy(currcons,0,0);
 						}
 						break;
 					case 's':
@@ -812,19 +836,22 @@ void con_write(struct tty_struct * tty)
 	}
 	set_cursor(currcons);
 	timer_active &= ~(1<<BLANK_TIMER);
-	if (console_blanked) {
-		timer_table[BLANK_TIMER].expires = 0;
-		timer_active |= 1<<BLANK_TIMER;
-	} else if (blankinterval) {
-		timer_table[BLANK_TIMER].expires = jiffies + blankinterval;
-		timer_active |= 1<<BLANK_TIMER;
-	}
+	if (currcons == fg_console)
+		if (console_blanked) {
+			timer_table[BLANK_TIMER].expires = 0;
+			timer_active |= 1<<BLANK_TIMER;
+		} else if (blankinterval) {
+			timer_table[BLANK_TIMER].expires = jiffies + blankinterval;
+			timer_active |= 1<<BLANK_TIMER;
+		}
 }
 
 void do_keyboard_interrupt(void)
 {
-	copy_to_cooked(TTY_TABLE(0));
+	TTY_READ_FLUSH(TTY_TABLE(0));
 	timer_active &= ~(1<<BLANK_TIMER);
+	if (vt_cons[fg_console].vt_mode == KD_GRAPHICS)
+		return;
 	if (console_blanked) {
 		timer_table[BLANK_TIMER].expires = 0;
 		timer_active |= 1<<BLANK_TIMER;
@@ -860,9 +887,7 @@ void con_init(void)
 	char *display_desc = "????";
 	char *display_ptr;
 	int currcons = 0;
-	long base, term;
-	long video_memory;
-	long saveterm, savebase;
+	long base;
 
 	video_num_columns = ORIG_VIDEO_COLS;
 	video_size_row = video_num_columns * 2;
@@ -923,25 +948,20 @@ void con_init(void)
 		display_ptr++;
 	}
 	
-	savebase = video_mem_base;
-	saveterm = video_mem_term;
 	memsetw(vc_scrmembuf,video_erase_char,MEM_BUFFER_SIZE/2);
-	video_mem_base = (long)vc_scrmembuf;
-	video_mem_term = (long)&(vc_scrmembuf[MEM_BUFFER_SIZE/2]);
-	video_memory = video_mem_term - video_mem_base;
+	base = (long)vc_scrmembuf;
 	screen_size = (video_num_lines * video_size_row);
-	NR_CONSOLES = video_memory / screen_size;
+	NR_CONSOLES = MEM_BUFFER_SIZE / screen_size;
 	if (NR_CONSOLES > MAX_CONSOLES)
 		NR_CONSOLES = MAX_CONSOLES;
 	if (!NR_CONSOLES)
 		NR_CONSOLES = 1;
-	video_memory = screen_size;
 	
 	/* Initialize the variables used for scrolling (mostly EGA/VGA)	*/
 	
-	base = origin = video_mem_start = video_mem_base;
-	term = video_mem_end = base + video_memory;
-	scr_end	= video_mem_start + screen_size;
+	base = origin = video_mem_start = (long)vc_scrmembuf;
+	scr_end = video_mem_end = base + screen_size;
+	vc_scrbuf[0] = (unsigned short *) origin;
 	top	= 0;
 	bottom	= video_num_lines;
   	attr = 0x07;
@@ -954,22 +974,23 @@ void con_init(void)
 	translate = NORM_TRANS;
 	kbdleds = 2;
 	kbdmode = 0;
+	kbdraw = 0;
+	kbde0 = 0;
 	kbdapplic = 0;
+	vt_cons[0].vt_mode = KD_TEXT;
         vc_cons[0].vc_bold_attr = -1;
 
 	gotoxy(currcons,ORIG_X,ORIG_Y);
   	for (currcons = 1; currcons<NR_CONSOLES; currcons++) {
 		vc_cons[currcons] = vc_cons[0];
-		origin = video_mem_start = (base += video_memory);
-		scr_end = origin + video_num_lines * video_size_row;
-		video_mem_end = (term += video_memory);
+		vt_cons[currcons] = vt_cons[0];
+		base += screen_size;
+		origin = video_mem_start = base;
+		scr_end = video_mem_end = base + screen_size;
+		vc_scrbuf[currcons] = (unsigned short *) origin;
 		gotoxy(currcons,0,0);
 	}
-  	for (currcons = 0; currcons<NR_CONSOLES; currcons++) 
-		vc_scrbuf[currcons] = (unsigned short *)origin;
 	currcons = 0;	
-	video_mem_base = savebase;
-	video_mem_term = saveterm;
 	
 	video_mem_start = video_mem_base;
 	video_mem_end = video_mem_term;
@@ -990,10 +1011,14 @@ void kbdsave(int new_console)
 {
 	int currcons = fg_console;
 	kbdmode = kmode;
+	kbdraw = kraw;
+	kbde0 = ke0;
 	kbdleds = kleds;
 	kbdapplic = kapplic;
 	currcons = new_console;
 	kmode = (kmode & 0x3F) | (kbdmode & 0xC0);
+	kraw = kbdraw;
+	ke0 = kbde0;
 	kleds = kbdleds;
 	kapplic = kbdapplic;
 	set_leds();
@@ -1104,6 +1129,8 @@ void console_print(const char * b)
 
 	if (currcons<0 || currcons>=NR_CONSOLES)
 		currcons = 0;
+	if (vt_cons[currcons].vt_mode == KD_GRAPHICS)
+		return;	/* no output in graphics mode */
 	while (c = *(b++)) {
 		if (c == 10) {
 			cr(currcons);

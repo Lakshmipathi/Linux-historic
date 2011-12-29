@@ -10,21 +10,19 @@ AR	=ar
 AS	=as
 LD	=ld
 LDFLAGS	=-s -x
-CC	=gcc
-CFLAGS	=-Wall -O -fstrength-reduce -fomit-frame-pointer \
-	-finline-functions -nostdinc -I../../include
-CPP	=gcc -E -nostdinc -I../../include
+CC	=gcc -nostdinc -I../../include
+CPP	=cpp -nostdinc -I../../include
 
 .c.s:
-	$(CC) $(CFLAGS) \
+	$(CC) $(CFLAGS) $(MATH_EMULATION) \
 	-S -o $*.s $<
 .s.o:
 	$(AS) -c -o $*.o $<
 .c.o:
-	$(CC) $(CFLAGS) \
+	$(CC) $(CFLAGS) $(MATH_EMULATION) \
 	-c -o $*.o $<
 
-OBJS  = math_emulate.o error.o convert.o ea.o get_put.o \
+OBJS  = emulate.o error.o convert.o ea.o get_put.o \
 	add.o mul.o div.o compare.o
 
 math.a: $(OBJS)
@@ -42,51 +40,46 @@ dep:
 	cp tmp_make Makefile
 
 ### Dependencies:
-add.s add.o : add.c ../../include/linux/math_emu.h ../../include/linux/sched.h \
-  ../../include/linux/head.h ../../include/linux/fs.h \
-  ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+add.s add.o : add.c ../../include/linux/math_emu.h ../../include/linux/sched.h ../../include/linux/head.h \
+  ../../include/linux/fs.h ../../include/sys/types.h ../../include/sys/dirent.h \
+  ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h 
-compare.s compare.o : compare.c ../../include/linux/math_emu.h \
-  ../../include/linux/sched.h ../../include/linux/head.h \
-  ../../include/linux/fs.h ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+compare.s compare.o : compare.c ../../include/linux/math_emu.h ../../include/linux/sched.h \
+  ../../include/linux/head.h ../../include/linux/fs.h ../../include/sys/types.h \
+  ../../include/sys/dirent.h ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h 
-convert.s convert.o : convert.c ../../include/linux/math_emu.h \
-  ../../include/linux/sched.h ../../include/linux/head.h \
-  ../../include/linux/fs.h ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+convert.s convert.o : convert.c ../../include/linux/math_emu.h ../../include/linux/sched.h \
+  ../../include/linux/head.h ../../include/linux/fs.h ../../include/sys/types.h \
+  ../../include/sys/dirent.h ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h 
-div.s div.o : div.c ../../include/linux/math_emu.h ../../include/linux/sched.h \
-  ../../include/linux/head.h ../../include/linux/fs.h \
-  ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+div.s div.o : div.c ../../include/linux/math_emu.h ../../include/linux/sched.h ../../include/linux/head.h \
+  ../../include/linux/fs.h ../../include/sys/types.h ../../include/sys/dirent.h \
+  ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h 
-ea.s ea.o : ea.c ../../include/stddef.h ../../include/linux/math_emu.h \
-  ../../include/linux/sched.h ../../include/linux/head.h \
-  ../../include/linux/fs.h ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+ea.s ea.o : ea.c ../../include/stddef.h ../../include/linux/math_emu.h ../../include/linux/sched.h \
+  ../../include/linux/head.h ../../include/linux/fs.h ../../include/sys/types.h \
+  ../../include/sys/dirent.h ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h ../../include/asm/segment.h 
-error.s error.o : error.c ../../include/signal.h ../../include/sys/types.h \
-  ../../include/linux/sched.h ../../include/linux/head.h \
-  ../../include/linux/fs.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/sys/param.h \
-  ../../include/sys/time.h ../../include/time.h ../../include/sys/resource.h 
-get_put.s get_put.o : get_put.c ../../include/signal.h ../../include/sys/types.h \
-  ../../include/linux/math_emu.h ../../include/linux/sched.h \
-  ../../include/linux/head.h ../../include/linux/fs.h \
-  ../../include/linux/mm.h ../../include/linux/kernel.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
-  ../../include/sys/resource.h ../../include/asm/segment.h 
-math_emulate.s math_emulate.o : math_emulate.c ../../include/linux/config.h 
-mul.s mul.o : mul.c ../../include/linux/math_emu.h ../../include/linux/sched.h \
-  ../../include/linux/head.h ../../include/linux/fs.h \
-  ../../include/sys/types.h ../../include/linux/mm.h \
-  ../../include/linux/kernel.h ../../include/signal.h \
-  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
+emulate.s emulate.o : emulate.c ../../include/signal.h ../../include/sys/types.h ../../include/linux/sched.h \
+  ../../include/linux/head.h ../../include/linux/fs.h ../../include/sys/dirent.h \
+  ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h ../../include/sys/resource.h 
+error.s error.o : error.c ../../include/signal.h ../../include/sys/types.h ../../include/linux/sched.h \
+  ../../include/linux/head.h ../../include/linux/fs.h ../../include/sys/dirent.h \
+  ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h ../../include/sys/resource.h 
+get_put.s get_put.o : get_put.c ../../include/signal.h ../../include/sys/types.h ../../include/linux/math_emu.h \
+  ../../include/linux/sched.h ../../include/linux/head.h ../../include/linux/fs.h \
+  ../../include/sys/dirent.h ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h ../../include/sys/resource.h \
+  ../../include/asm/segment.h 
+mul.s mul.o : mul.c ../../include/linux/math_emu.h ../../include/linux/sched.h ../../include/linux/head.h \
+  ../../include/linux/fs.h ../../include/sys/types.h ../../include/sys/dirent.h \
+  ../../include/limits.h ../../include/linux/mm.h ../../include/linux/kernel.h \
+  ../../include/signal.h ../../include/sys/param.h ../../include/sys/time.h ../../include/time.h \
   ../../include/sys/resource.h 
