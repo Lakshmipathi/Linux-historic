@@ -12,6 +12,7 @@
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/tty.h>
 #include <asm/segment.h>
 
@@ -284,7 +285,10 @@ static void forget_original_parent(struct task_struct * father)
 
 	for (p = &LAST_TASK ; p > &FIRST_TASK ; --p)
 		if (*p && (*p)->p_opptr == father)
-			(*p)->p_opptr = task[1];
+			if (task[1])
+				(*p)->p_opptr = task[1];
+			else
+				(*p)->p_opptr = task[0];
 }
 
 volatile void do_exit(long code)
@@ -292,6 +296,7 @@ volatile void do_exit(long code)
 	struct task_struct *p;
 	int i;
 
+fake_volatile:
 	free_page_tables(get_base(current->ldt[1]),get_limit(0x0f));
 	free_page_tables(get_base(current->ldt[2]),get_limit(0x17));
 	for (i=0 ; i<NR_OPEN ; i++)
@@ -342,12 +347,15 @@ volatile void do_exit(long code)
 		current->p_cptr = p->p_osptr;
 		p->p_ysptr = NULL;
 		p->flags &= ~PF_PTRACED;
-		p->p_pptr = task[1];
+		if (task[1])
+			p->p_pptr = task[1];
+		else
+			p->p_pptr = task[0];
 		p->p_osptr = p->p_pptr->p_cptr;
 		p->p_osptr->p_ysptr = p;
 		p->p_pptr->p_cptr = p;
 		if (p->state == TASK_ZOMBIE)
-			p->p_pptr->signal |= (1<<(SIGCHLD-1));
+			send_sig(SIGCHLD,p->p_pptr,1);
 		/*
 		 * process group orphan check
 		 * Case ii: Our child is in a different pgrp 
@@ -383,6 +391,20 @@ volatile void do_exit(long code)
 	audit_ptree();
 #endif
 	schedule();
+/*
+ * In order to get rid of the "volatile function does return" message
+ * I did this little loop that confuses gcc to think do_exit really
+ * is volatile. In fact it's schedule() that is volatile in some
+ * circumstances: when current->state = ZOMBIE, schedule() never
+ * returns.
+ *
+ * In fact the natural way to do all this is to have the label and the
+ * goto right after each other, but I put the fake_volatile label at
+ * the start of the function just in case something /really/ bad
+ * happens, and the schedule returns. This way we can try again. I'm
+ * not paranoid: it's just that everybody is out to get me.
+ */
+	goto fake_volatile;
 }
 
 int sys_exit(int error_code)

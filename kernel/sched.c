@@ -28,7 +28,7 @@ int need_resched = 0;
 #define _S(nr) (1<<((nr)-1))
 #define _BLOCKABLE (~(_S(SIGKILL) | _S(SIGSTOP)))
 
-void show_task(int nr,struct task_struct * p)
+static void show_task(int nr,struct task_struct * p)
 {
 	int i,j = 4096-sizeof(struct task_struct);
 
@@ -392,19 +392,19 @@ void do_timer(long cpl)
 	for (task_p = &LAST_TASK; task_p >= &FIRST_TASK; task_p--)
 		if (*task_p && (*task_p)->it_real_value
 			&& !(--(*task_p)->it_real_value)) {
-			(*task_p)->signal |= (1<<(SIGALRM-1));
+			send_sig(SIGALRM,*task_p,1);
 			(*task_p)->it_real_value = (*task_p)->it_real_incr;
 			need_resched = 1;
 		}
 	/* Update ITIMER_PROF for the current task */
 	if (current->it_prof_value && !(--current->it_prof_value)) {
 		current->it_prof_value = current->it_prof_incr;
-		current->signal |= (1<<(SIGPROF-1));
+		send_sig(SIGPROF,current,1);
 	}
 	/* Update ITIMER_VIRT for current task if not in a system call */
 	if (cpl && current->it_virt_value && !(--current->it_virt_value)) {
 		current->it_virt_value = current->it_virt_incr;
-		current->signal |= (1<<(SIGVTALRM-1));
+		send_sig(SIGVTALRM,current,1);
 	}
 
 	if (cpl)

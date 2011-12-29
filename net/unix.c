@@ -8,7 +8,7 @@
 #include <asm/segment.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <fcntl.h>
+#include <linux/fcntl.h>
 #include <termios.h>
 #include "kern_sock.h"
 
@@ -418,7 +418,7 @@ unix_proto_read(struct socket *sock, char *ubuf, int size, int nonblock)
 
 		if (avail <= 0) {
 			PRINTK("unix_proto_read: AVAIL IS NEGATIVE!!!\n");
-			current->signal |= (1 << (SIGKILL-1));
+			send_sig(SIGKILL,current,1);
 			return -EINTR;
 		}
 
@@ -456,7 +456,7 @@ unix_proto_write(struct socket *sock, char *ubuf, int size, int nonblock)
 	if (sock->state != SS_CONNECTED) {
 		PRINTK("unix_proto_write: socket not connected\n");
 		if (sock->state == SS_DISCONNECTING) {
-			current->signal |= (1 << (SIGPIPE-1));
+			send_sig(SIGPIPE,current,1);
 			return -EINTR;
 		}
 		return -EINVAL;
@@ -466,15 +466,15 @@ unix_proto_write(struct socket *sock, char *ubuf, int size, int nonblock)
 	while (!(space = UN_BUF_SPACE(pupd))) {
 		PRINTK("unix_proto_write: no space left...\n");
 		if (nonblock)
-			return 0;
+			return -EAGAIN;
 		interruptible_sleep_on(sock->wait);
 		if (current->signal & ~current->blocked) {
 			PRINTK("unix_proto_write: interrupted\n");
-			return -EINTR;
+			return -ERESTARTSYS;
 		}
 		if (sock->state == SS_DISCONNECTING) {
 			PRINTK("unix_proto_write: disconnected (SIGPIPE)\n");
-			current->signal |= (1 << (SIGPIPE-1));
+			send_sig(SIGPIPE,current,1);
 			return -EINTR;
 		}
 	}
@@ -488,7 +488,7 @@ unix_proto_write(struct socket *sock, char *ubuf, int size, int nonblock)
 
 		if (space <= 0) {
 			PRINTK("unix_proto_write: SPACE IS NEGATIVE!!!\n");
-			current->signal |= (1 << (SIGKILL-1));
+			send_sig(SIGKILL,current,1);
 			return -EINTR;
 		}
 
@@ -497,7 +497,7 @@ unix_proto_write(struct socket *sock, char *ubuf, int size, int nonblock)
 		 * for it (peerupd is safe until we close)
 		 */
 		if (sock->state == SS_DISCONNECTING) {
-			current->signal |= (1 << (SIGPIPE-1));
+			send_sig(SIGPIPE,current,1);
 			return -EINTR;
 		}
 		if ((cando = todo) > space)
