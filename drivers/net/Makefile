@@ -74,9 +74,32 @@ slip.o:	slip.c CONFIG
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
 endif
 
+ifdef CONFIG_DE650
+NETDRV_OBJS := $(NETDRV_OBJS) net.a(de650.o)
+CONFIG_8390 = CONFIG_8390
+endif
+ifdef CONFIG_3C589
+NETDRV_OBJS := $(NETDRV_OBJS) net.a(3c589.o)
+endif
+
+ifdef CONFIG_DUMMY
+NETDRV_OBJS := $(NETDRV_OBJS) net.a(dummy.o)
+dummy.o: dummy.c CONFIG
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
+endif
+
 ifdef CONFIG_DE600
 NETDRV_OBJS := $(NETDRV_OBJS) net.a(de600.o)
 endif
+de600.o: de600.c CONFIG
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DE600_OPTS) -c $<
+	
+ifdef CONFIG_DE620
+NETDRV_OBJS := $(NETDRV_OBJS) net.a(de620.o)
+endif
+de620.o: de620.c CONFIG
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DE620_OPTS) -c $<
+	
 ifdef CONFIG_AT1500
 NETDRV_OBJS := $(NETDRV_OBJS) net.a(lance.o)
 endif
@@ -121,6 +144,9 @@ endif
 ifdef CONFIG_AC3200
 NETDRV_OBJS := $(NETDRV_OBJS) net.a(ac3200.o)
 CONFIG_8390 = CONFIG_8390
+endif
+ifdef CONFIG_APRICOT
+NETDRV_OBJS := $(NETDRV_OBJS) net.a(apricot.o)
 endif
 
 ifdef CONFIG_8390

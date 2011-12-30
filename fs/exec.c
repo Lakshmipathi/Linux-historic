@@ -42,6 +42,7 @@
 #include <asm/system.h>
 
 #include <linux/binfmts.h>
+#include <linux/personality.h>
 
 #include <asm/segment.h>
 #include <asm/system.h>
@@ -52,6 +53,50 @@ asmlinkage int sys_open(const char *, int, int);
 asmlinkage int sys_brk(unsigned long);
 
 extern void shm_exit (void);
+
+static int load_aout_binary(struct linux_binprm *, struct pt_regs * regs);
+static int load_aout_library(int fd);
+static int aout_core_dump(long signr, struct pt_regs * regs);
+
+/*
+ * Here are the actual binaries that will be accepted:
+ * add more with "register_binfmt()"..
+ */
+static struct linux_binfmt aout_format = {
+	NULL, NULL, load_aout_binary, load_aout_library, aout_core_dump
+};
+static struct linux_binfmt *formats = &aout_format;
+
+int register_binfmt(struct linux_binfmt * fmt)
+{
+	struct linux_binfmt ** tmp = &formats;
+
+	if (!fmt)
+		return -EINVAL;
+	if (fmt->next)
+		return -EBUSY;
+	while (*tmp) {
+		if (fmt == *tmp)
+			return -EBUSY;
+		tmp = &(*tmp)->next;
+	}
+	*tmp = fmt;
+	return 0;	
+}
+
+int unregister_binfmt(struct linux_binfmt * fmt)
+{
+	struct linux_binfmt ** tmp = &formats;
+
+	while (*tmp) {
+		if (fmt == *tmp) {
+			*tmp = fmt->next;
+			return 0;
+		}
+		tmp = &(*tmp)->next;
+	}
+	return -EINVAL;
+}
 
 int open_inode(struct inode * inode, int mode)
 {
@@ -113,7 +158,7 @@ if (file.f_op->lseek) { \
  * field, which also makes sure the core-dumps won't be recursive if the
  * dumping of the process results in another error..
  */
-int core_dump(long signr, struct pt_regs * regs)
+static int aout_core_dump(long signr, struct pt_regs * regs)
 {
 	struct inode * inode = NULL;
 	struct file file;
@@ -210,13 +255,13 @@ int core_dump(long signr, struct pt_regs * regs)
 		dump_start = dump.u_tsize << 12;
 		dump_size = dump.u_dsize << 12;
 		DUMP_WRITE(dump_start,dump_size);
-	};
+	}
 /* Now prepare to dump the stack area */
 	if (dump.u_ssize != 0) {
 		dump_start = dump.start_stack;
 		dump_size = dump.u_ssize << 12;
 		DUMP_WRITE(dump_start,dump_size);
-	};
+	}
 /* Finally dump the task struct.  Not be used by gdb, but could be useful */
 	set_fs(KERNEL_DS);
 	DUMP_WRITE(current,sizeof(*current));
@@ -247,14 +292,14 @@ asmlinkage int sys_uselib(const char * library)
 	file = current->files->fd[fd];
 	retval = -ENOEXEC;
 	if (file && file->f_inode && file->f_op && file->f_op->read) {
-		fmt = formats;
-		do {
+		for (fmt = formats ; fmt ; fmt = fmt->next) {
 			int (*fn)(int) = fmt->load_shlib;
 			if (!fn)
 				break;
 			retval = fn(fd);
-			fmt++;
-		} while (retval == -ENOEXEC);
+			if (retval != -ENOEXEC)
+				break;
+		}
 	}
 	sys_close(fd);
   	return retval;
@@ -277,12 +322,12 @@ unsigned long * create_tables(char * p,int argc,int envc,int ibcs)
 		mpnt->vm_start = PAGE_MASK & (unsigned long) p;
 		mpnt->vm_end = TASK_SIZE;
 		mpnt->vm_page_prot = PAGE_PRIVATE|PAGE_DIRTY;
+		mpnt->vm_flags = VM_GROWSDOWN;
 		mpnt->vm_share = NULL;
 		mpnt->vm_inode = NULL;
 		mpnt->vm_offset = 0;
 		mpnt->vm_ops = NULL;
 		insert_vm_struct(current, mpnt);
-		current->mm->stk_vma = mpnt;
 	}
 	sp = (unsigned long *) (0xfffffffc & (unsigned long) p);
 	sp -= envc+1;
@@ -488,7 +533,6 @@ void flush_old_exec(struct linux_binprm * bprm)
 
 	mpnt = current->mm->mmap;
 	current->mm->mmap = NULL;
-	current->mm->stk_vma = NULL;
 	while (mpnt) {
 		mpnt1 = mpnt->vm_next;
 		if (mpnt->vm_ops && mpnt->vm_ops->close)
@@ -530,13 +574,12 @@ void flush_old_exec(struct linux_binprm * bprm)
 	if (last_task_used_math == current)
 		last_task_used_math = NULL;
 	current->used_math = 0;
-	current->elf_executable = 0;
 }
 
 /*
  * sys_execve() executes a new program.
  */
-static int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs)
+int do_execve(char * filename, char ** argv, char ** envp, struct pt_regs * regs)
 {
 	struct linux_binprm bprm;
 	struct linux_binfmt * fmt;
@@ -684,8 +727,7 @@ restart_interp:
 	}
 
 	bprm.sh_bang = sh_bang;
-	fmt = formats;
-	do {
+	for (fmt = formats ; fmt ; fmt = fmt->next) {
 		int (*fn)(struct linux_binprm *, struct pt_regs *) = fmt->load_binary;
 		if (!fn)
 			break;
@@ -695,8 +737,9 @@ restart_interp:
 			current->did_exec = 1;
 			return 0;
 		}
-		fmt++;
-	} while (retval == -ENOEXEC);
+		if (retval != -ENOEXEC)
+			break;
+	}
 exec_error2:
 	iput(bprm.inode);
 exec_error1:
@@ -721,39 +764,6 @@ asmlinkage int sys_execve(struct pt_regs regs)
 	return error;
 }
 
-/*
- * These are  the prototypes for the  functions in the  dispatch table, as
- * well as the  dispatch  table itself.
- */
-
-extern int load_aout_binary(struct linux_binprm *,
-			    struct pt_regs * regs);
-extern int load_aout_library(int fd);
-
-#ifdef CONFIG_BINFMT_ELF
-extern int load_elf_binary(struct linux_binprm *,
-			    struct pt_regs * regs);
-extern int load_elf_library(int fd);
-#endif
-
-#ifdef CONFIG_BINFMT_COFF
-extern int load_coff_binary(struct linux_binprm *,
-			    struct pt_regs * regs);
-extern int load_coff_library(int fd);
-#endif
-
-/* Here are the actual binaries that will be accepted  */
-struct linux_binfmt formats[] = {
-	{load_aout_binary, load_aout_library},
-#ifdef CONFIG_BINFMT_ELF
-	{load_elf_binary, load_elf_library},
-#endif
-#ifdef CONFIG_BINFMT_COFF
-	{load_coff_binary, load_coff_library},
-#endif
-	{NULL, NULL}
-};
-
 static void set_brk(unsigned long start, unsigned long end)
 {
 	start = PAGE_ALIGN(start);
@@ -770,12 +780,13 @@ static void set_brk(unsigned long start, unsigned long end)
  * libraries.  There is no binary dependent code anywhere else.
  */
 
-int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
+static int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 {
 	struct exec ex;
 	struct file * file;
 	int fd, error;
 	unsigned long p = bprm->p;
+	unsigned long fd_offset;
 
 	ex = *((struct exec *) bprm->buf);		/* exec-header */
 	if ((N_MAGIC(ex) != ZMAGIC && N_MAGIC(ex) != OMAGIC && 
@@ -785,17 +796,19 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		return -ENOEXEC;
 	}
 
-	if (N_MAGIC(ex) == ZMAGIC &&
-	    (N_TXTOFF(ex) < bprm->inode->i_sb->s_blocksize)) {
-		printk("N_TXTOFF < BLOCK_SIZE. Please convert binary.");
+	current->personality = PER_LINUX;
+	fd_offset = N_TXTOFF(ex);
+	if (N_MAGIC(ex) == ZMAGIC && fd_offset != BLOCK_SIZE) {
+		printk(KERN_NOTICE "N_TXTOFF != BLOCK_SIZE. See a.out.h.\n");
 		return -ENOEXEC;
 	}
 
-	if (N_TXTOFF(ex) != BLOCK_SIZE && N_MAGIC(ex) == ZMAGIC) {
-		printk("N_TXTOFF != BLOCK_SIZE. See a.out.h.");
+	if (N_MAGIC(ex) == ZMAGIC && ex.a_text &&
+	    (fd_offset < bprm->inode->i_sb->s_blocksize)) {
+		printk(KERN_NOTICE "N_TXTOFF < BLOCK_SIZE. Please convert binary.\n");
 		return -ENOEXEC;
 	}
-	
+
 	/* OK, This is the point of no return */
 	flush_old_exec(bprm);
 
@@ -816,7 +829,7 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		read_exec(bprm->inode, 32, (char *) 0, ex.a_text+ex.a_data);
 	} else {
 		if (ex.a_text & 0xfff || ex.a_data & 0xfff)
-			printk("%s: executable not page aligned\n", current->comm);
+			printk(KERN_NOTICE "executable not page aligned\n");
 		
 		fd = open_inode(bprm->inode, O_RDONLY);
 		
@@ -828,37 +841,53 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 			do_mmap(NULL, 0, ex.a_text+ex.a_data,
 				PROT_READ|PROT_WRITE|PROT_EXEC,
 				MAP_FIXED|MAP_PRIVATE, 0);
-			read_exec(bprm->inode, N_TXTOFF(ex),
+			read_exec(bprm->inode, fd_offset,
 				  (char *) N_TXTADDR(ex), ex.a_text+ex.a_data);
 			goto beyond_if;
 		}
-		error = do_mmap(file, N_TXTADDR(ex), ex.a_text,
-				PROT_READ | PROT_EXEC,
-				MAP_FIXED | MAP_SHARED, N_TXTOFF(ex));
 
-		if (error != N_TXTADDR(ex)) {
-			sys_close(fd);
-			send_sig(SIGSEGV, current, 0);
-			return 0;
-		};
+		if (ex.a_text) {
+			error = do_mmap(file, N_TXTADDR(ex), ex.a_text,
+				PROT_READ | PROT_EXEC,
+				MAP_FIXED | MAP_SHARED, fd_offset);
+
+			if (error != N_TXTADDR(ex)) {
+				sys_close(fd);
+				send_sig(SIGSEGV, current, 0);
+				return -EINVAL;
+			}
+		}
 		
  		error = do_mmap(file, N_TXTADDR(ex) + ex.a_text, ex.a_data,
 				PROT_READ | PROT_WRITE | PROT_EXEC,
-				MAP_FIXED | MAP_PRIVATE, N_TXTOFF(ex) + ex.a_text);
+				MAP_FIXED | MAP_PRIVATE, fd_offset + ex.a_text);
 		sys_close(fd);
 		if (error != N_TXTADDR(ex) + ex.a_text) {
 			send_sig(SIGSEGV, current, 0);
-			return 0;
-		};
+			return -EINVAL;
+		}
 		current->executable = bprm->inode;
 		bprm->inode->i_count++;
 	}
 beyond_if:
+	if (current->exec_domain && current->exec_domain->use_count)
+		(*current->exec_domain->use_count)--;
+	if (current->binfmt && current->binfmt->use_count)
+		(*current->binfmt->use_count)--;
+	current->exec_domain = lookup_exec_domain(current->personality);
+	current->binfmt = &aout_format;
+	if (current->exec_domain && current->exec_domain->use_count)
+		(*current->exec_domain->use_count)++;
+	if (current->binfmt && current->binfmt->use_count)
+		(*current->binfmt->use_count)++;
+
 	set_brk(current->mm->start_brk, current->mm->brk);
 	
 	p += change_ldt(ex.a_text,bprm->page);
 	p -= MAX_ARG_PAGES*PAGE_SIZE;
-	p = (unsigned long) create_tables((char *)p,bprm->argc,bprm->envc,0);
+	p = (unsigned long)create_tables((char *)p,
+					bprm->argc, bprm->envc,
+					current->personality != PER_LINUX);
 	current->mm->start_stack = p;
 	regs->eip = ex.a_entry;		/* eip, magic happens :-) */
 	regs->esp = p;			/* stack pointer */
@@ -868,7 +897,7 @@ beyond_if:
 }
 
 
-int load_aout_library(int fd)
+static int load_aout_library(int fd)
 {
         struct file * file;
 	struct exec ex;

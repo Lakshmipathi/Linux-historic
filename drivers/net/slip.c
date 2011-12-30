@@ -22,6 +22,7 @@
  *		Charles Hedrick :	CSLIP header length problem fix.
  *		Alan Cox	:	Corrected non-IP cases of the above.
  *		Alan Cox	:	Now uses hardware type as per FvK.
+ *		Alan Cox	:	Default to 192.168.0.0 (RFC 1597)
  *
  *
  *	FIXME:	This driver still makes some IP'ish assumptions. It should build cleanly KISS TNC only without
@@ -400,12 +401,14 @@ static void slip_write_wakeup(struct tty_struct *tty)
 		return;
 	}
 
-	if (!sl->xtail || (sl->flags & SLF_XMIT_BUSY))
+	if (!sl->xtail)
 		return;
 
 	cli();
-	if (sl->flags & SLF_XMIT_BUSY)
+	if (sl->flags & SLF_XMIT_BUSY) {
+		sti();
 		return;
+	}
 	sl->flags |= SLF_XMIT_BUSY;
 	sti();
 	
@@ -464,41 +467,11 @@ sl_xmit(struct sk_buff *skb, struct device *dev)
 
   /* We were not, so we are now... :-) */
   if (skb != NULL) {
-#if 0  
-#ifdef CONFIG_AX25 
-  	if(sl->mode & SL_MODE_AX25)
-  	{
-  		if(!skb->arp && dev->rebuild_header(skb->data,dev))
-  		{
-  			skb->dev=dev;
-  			arp_queue(skb);
-  			return 0;
-  		}
-  		skb->arp=1;
-  	}
-#endif  	
-#endif
 	sl_lock(sl);
 	
 	size=skb->len;
-#if 0	
-	if(!(sl->mode&SL_MODE_AX25))
-	{
-		if(size<sizeof(struct iphdr))
-		{
-			printk("Runt IP frame fed to slip!\n");
-		}
-		else
-		{
-			size=((struct iphdr *)(skb->data))->tot_len;
-			size=ntohs(size);
-		/*	sl_hex_dump(skb->data,skb->len);*/
-		}
-	}
-#endif	
 	sl_encaps(sl, skb->data, size);
-	if (skb->free) 
-		kfree_skb(skb, FREE_WRITE);
+	dev_kfree_skb(skb, FREE_WRITE);
   }
   return(0);
 }
@@ -626,7 +599,7 @@ sl_open(struct device *dev)
   dev->flags|=IFF_UP;
   /* Needed because address '0' is special */
   if(dev->pa_addr==0)
-  	dev->pa_addr=ntohl(0xC0000001);
+  	dev->pa_addr=ntohl(0xC0A80001);
   return(0);
 }
 
@@ -656,6 +629,10 @@ sl_close(struct device *dev)
   return(0);
 }
 
+static int slip_receive_room(struct tty_struct *tty)
+{
+	return 65536;  /* We can handle an infinite amount of data. :-) */
+}
 
 /*
  * Handle the 'receiver data ready' interrupt.
@@ -680,7 +657,7 @@ static void slip_receive_buf(struct tty_struct *tty, unsigned char *cp,
   	
 	/* Read the characters out of the buffer */
 	while (count--) {
-		if (*fp++) {
+		if (fp && *fp++) {
 			sl->flags |= SLF_ERROR;
 			cp++;
 			continue;
@@ -1048,6 +1025,7 @@ slip_init(struct device *dev)
 				   unsigned int, unsigned long)) slip_ioctl;
 	sl_ldisc.select = NULL;
 	sl_ldisc.receive_buf = slip_receive_buf;
+	sl_ldisc.receive_room = slip_receive_room;
 	sl_ldisc.write_wakeup = slip_write_wakeup;
 	if ((i = tty_register_ldisc(N_SLIP, &sl_ldisc)) != 0)
 		printk("ERROR: %d\n", i);

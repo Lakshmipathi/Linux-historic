@@ -51,6 +51,7 @@
  *					UDP as there is a nasty checksum issue
  *					if you do things the wrong way.
  *		Alan Cox	:	Always defrag, moved IP_FORWARD to the config.in file
+ *		Alan Cox	: 	IP options adjust sk->priority.
  *
  * To Fix:
  *		IP option processing is mostly not needed. ip_forward needs to know about routing rules
@@ -90,6 +91,7 @@ extern int last_retran;
 extern void sort_send(struct sock *sk);
 
 #define min(a,b)	((a)<(b)?(a):(b))
+#define LOOPBACK(x)	(((x) & htonl(0xff000000)) == htonl(0x7f000000))
 
 /*
  *	SNMP management statistics
@@ -171,12 +173,13 @@ static int ip_send(struct sk_buff *skb, unsigned long daddr, int len, struct dev
 		{
 			mac = -mac;
 			skb->arp = 0;
-			skb->raddr = daddr;	/* next routing address */
+			skb->raddr = daddr;	/* next routing address */			
 		}	
 	}
 	return mac;
 }
 
+int ip_id_count = 0;
 
 /*
  * This routine builds the appropriate hardware/IP headers for
@@ -192,7 +195,6 @@ int ip_build_header(struct sk_buff *skb, unsigned long saddr, unsigned long dadd
   	struct rtable *rt;
   	unsigned char *buff;
   	unsigned long raddr;
-  	static int count = 0;
   	int tmp;
   	unsigned long src;
 
@@ -226,7 +228,7 @@ int ip_build_header(struct sk_buff *skb, unsigned long saddr, unsigned long dadd
 		 *	If the frame is from us and going off machine it MUST MUST MUST
 		 *	have the output device ip address and never the loopback
 		 */
-		if (saddr == 0x0100007FL && daddr != 0x0100007FL) 
+		if (LOOPBACK(saddr) && !LOOPBACK(daddr))
 			saddr = src;/*rt->rt_dev->pa_addr;*/
 		raddr = rt->rt_gateway;
 
@@ -245,7 +247,7 @@ int ip_build_header(struct sk_buff *skb, unsigned long saddr, unsigned long dadd
 		 *	If the frame is from us and going off machine it MUST MUST MUST
 		 *	have the output device ip address and never the loopback
 		 */
-		if (saddr == 0x0100007FL && daddr != 0x0100007FL) 
+		if (LOOPBACK(saddr) && !LOOPBACK(daddr))
 			saddr = src;/*rt->rt_dev->pa_addr;*/
 
 		raddr = (rt == NULL) ? 0 : rt->rt_gateway;
@@ -295,8 +297,7 @@ int ip_build_header(struct sk_buff *skb, unsigned long saddr, unsigned long dadd
 	iph->saddr    = saddr;
 	iph->protocol = type;
 	iph->ihl      = 5;
-	iph->id       = htons(count++);
-
+  
 	/* Setup the IP options. */
 #ifdef Not_Yet_Avail
 	build_options(iph, opt);
@@ -666,7 +667,6 @@ static void ip_free(struct ipq *qp)
  
    	/* Finally, release the queue descriptor itself. */
    	kfree_s(qp, sizeof(struct ipq));
-/*   	printk("ip_free:done\n");*/
    	sti();
  }
  
@@ -717,7 +717,7 @@ static struct ipq *ip_create(struct sk_buff *skb, struct iphdr *iph, struct devi
   	{
 		printk("IP: create: no memory left !\n");
 		return(NULL);
-   	skb->dev = qp->dev;
+	   	skb->dev = qp->dev;
   	}
  	memset(qp, 0, sizeof(struct ipq));
 
@@ -950,7 +950,7 @@ static struct sk_buff *ip_defrag(struct iphdr *iph, struct sk_buff *skb, struct 
    	 
    	ihl = (iph->ihl * sizeof(unsigned long));
    	end = offset + ntohs(iph->tot_len) - ihl;
- 
+
    	/*
    	 *	Point into the IP datagram 'data' part. 
    	 */
@@ -1089,6 +1089,7 @@ static struct sk_buff *ip_defrag(struct iphdr *iph, struct sk_buff *skb, struct 
    	struct sk_buff *skb2;
    	int left, mtu, hlen, len;
    	int offset;
+   	unsigned long flags;
  
    	/* 
    	 *	Point into the IP datagram header. 
@@ -1181,19 +1182,27 @@ static struct sk_buff *ip_defrag(struct iphdr *iph, struct sk_buff *skb, struct 
  		 *	Set up data on packet
  		 */
 
- 		skb2->arp = 0;/*skb->arp;*/
- 		skb2->free = skb->free;
+ 		skb2->arp = skb->arp;
+ 		if(skb->free==0)
+ 			printk("IP fragmenter: BUG free!=1 in fragmenter\n");
+ 		skb2->free = 1;
  		skb2->len = len + hlen;
  		skb2->h.raw=(char *) skb2->data;
- 		skb2->raddr = skb->raddr;	/* For rebuild_header */
 		/*
 		 *	Charge the memory for the fragment to any owner
 		 *	it might posess
 		 */
 		 
+		save_flags(flags);
  		if (sk) 
+ 		{
+ 			cli();
  			sk->wmem_alloc += skb2->mem_len;
- 
+ 			skb2->sk=sk;
+ 		}
+ 		restore_flags(flags);
+ 		skb2->raddr = skb->raddr;	/* For rebuild_header - must be here */ 
+
  		/* 
  		 *	Copy the packet header into the new buffer. 
  		 */
@@ -1228,7 +1237,7 @@ static struct sk_buff *ip_defrag(struct iphdr *iph, struct sk_buff *skb, struct 
  		 
  		ip_statistics.IpFragCreates++;
  		
- 		ip_queue_xmit(sk, dev, skb2, 1);
+ 		ip_queue_xmit(sk, dev, skb2, 2);
    	}
    	ip_statistics.IpFragOKs++;
 }
@@ -1237,7 +1246,7 @@ static struct sk_buff *ip_defrag(struct iphdr *iph, struct sk_buff *skb, struct 
 
 #ifdef CONFIG_IP_FORWARD
 
-/* 
+/* 	
  *	Forward an IP datagram to its next destination. 
  */
 
@@ -1250,25 +1259,6 @@ static void ip_forward(struct sk_buff *skb, struct device *dev, int is_frag)
 	unsigned char *ptr;	/* Data pointer */
 	unsigned long raddr;	/* Router IP address */
 
-	/*
-	 * Only forward packets that were fired at us when we are in promiscuous
-	 * mode. In standard mode we rely on the driver to filter for us.
-	 *
-	 * This is a mess. When the drivers class packets on the upcall this
-	 * will tidy up!
-	 */
-   
-	if(dev->flags&IFF_PROMISC)
-	{
-  		if(memcmp(skb->data,dev->dev_addr,dev->addr_len))
-  			return;
-	}
-	
-	if(memcmp(skb->data,dev->broadcast, dev->addr_len))
-		return;
-	
-
-  
   	/*
   	 *	According to the RFC, we must first decrease the TTL field. If
   	 *	that reaches zero, we must reply an ICMP control message telling
@@ -1516,7 +1506,16 @@ int ip_rcv(struct sk_buff *skb, struct device *dev, struct packet_type *pt)
 
 	if ((brd = ip_chk_addr(iph->daddr)) == 0) 
 	{
+		/*
+		 *	Don't forward multicast or broadcast frames.
+		 */
 	
+		if(skb->pkt_type!=PACKET_HOST)
+		{
+			kfree_skb(skb,FREE_WRITE);
+			return 0;
+		}
+		
 		/*
 		 *	The packet is for another target. Forward the frame
 		 */
@@ -1524,8 +1523,8 @@ int ip_rcv(struct sk_buff *skb, struct device *dev, struct packet_type *pt)
 #ifdef CONFIG_IP_FORWARD
 		ip_forward(skb, dev, is_frag);
 #else
-		printk("Machine %lx tried to use us as a forwarder to %lx but we have forwarding disabled!\n",
-			iph->saddr,iph->daddr);
+/*		printk("Machine %lx tried to use us as a forwarder to %lx but we have forwarding disabled!\n",
+			iph->saddr,iph->daddr);*/
 		ip_statistics.IpInAddrErrors++;
 #endif			
 		/*
@@ -1580,25 +1579,9 @@ int ip_rcv(struct sk_buff *skb, struct device *dev, struct packet_type *pt)
 	*/
 		if (ipprot->copy) 
 		{
-#if 0		
-			skb2 = alloc_skb(skb->mem_len-sizeof(struct sk_buff), GFP_ATOMIC);
-			if (skb2 == NULL) 
-				continue;
-			memcpy(skb2, skb, skb2->mem_len);
-			skb2->ip_hdr = (struct iphdr *)(
-					(unsigned long)skb2 +
-					(unsigned long) skb->ip_hdr -
-					(unsigned long)skb);
-			skb2->h.raw = (unsigned char *)(
-					(unsigned long)skb2 +
-					(unsigned long) skb->h.raw -
-					(unsigned long)skb);
-			skb2->free=1;
-#else
 			skb2 = skb_clone(skb, GFP_ATOMIC);
 			if(skb2==NULL)
 				continue;
-#endif							
 		} 
 		else 
 		{
@@ -1638,7 +1621,8 @@ int ip_rcv(struct sk_buff *skb, struct device *dev, struct packet_type *pt)
 /*
  * Queues a packet to be sent, and starts the transmitter
  * if necessary.  if free = 1 then we free the block after
- * transmit, otherwise we don't.
+ * transmit, otherwise we don't. If free==2 we not only
+ * free the block but also dont assign a new ip seq number.
  * This routine also needs to put in the total length,
  * and compute the checksum
  */
@@ -1649,10 +1633,6 @@ void ip_queue_xmit(struct sock *sk, struct device *dev,
   	struct iphdr *iph;
   	unsigned char *ptr;
 
-	/* All buffers without an owner socket get freed */
-  	if (sk == NULL) 
-  		free = 1;
-  	
   	/* Sanity check */
   	if (dev == NULL) 
   	{
@@ -1666,7 +1646,7 @@ void ip_queue_xmit(struct sock *sk, struct device *dev,
   	 *	Do some book-keeping in the packet for later
   	 */
 
-  	skb->free = free;
+
   	skb->dev = dev;
   	skb->when = jiffies;
   
@@ -1683,6 +1663,21 @@ void ip_queue_xmit(struct sock *sk, struct device *dev,
 	iph = (struct iphdr *)ptr;
 	skb->ip_hdr = iph;
 	iph->tot_len = ntohs(skb->len-dev->hard_header_len);
+
+	/*
+	 *	No reassigning numbers to fragments...
+	 */
+	 
+	if(free!=2)
+		iph->id      = htons(ip_id_count++);
+	else
+		free=1;
+		
+	/* All buffers without an owner socket get freed */
+  	if (sk == NULL) 
+  		free = 1;
+  	
+  	skb->free = free;		
 
 	/*
 	 *	Do we need to fragment. Again this is inefficient. 
@@ -1813,27 +1808,34 @@ void ip_do_retransmit(struct sock *sk, int all)
 	{
 		dev = skb->dev;
 		IS_SKB(skb);
-#if 0
-	/********** THIS IS NOW DONE BY THE DEVICE LAYER **********/	
-		/*
-		 * 	The rebuild_header function sees if the ARP is done.
-		 * 	If not it sends a new ARP request, and if so it builds
-		 * 	the header. It isn't really needed here, and with the
-		 *	new ARP pretty much will not happen.
-		 */
-		 
-		if (!skb->arp) 
-		{
-			if (dev->rebuild_header(skb->data, dev, skb->raddr, NULL)) 
-			{
-				if (!all) 
-					break;
-				skb = skb->link3;
-				continue;
-			}
-		}
-#endif
 		skb->when = jiffies;
+
+		/* 
+		 * In general it's OK just to use the old packet.  However we
+		 * need to use the current ack and window fields.  Urg and 
+		 * urg_ptr could possibly stand to be updated as well, but we 
+		 * don't keep the necessary data.  That shouldn't be a problem,
+		 * if the other end is doing the right thing.  Since we're 
+		 * changing the packet, we have to issue a new IP identifier.
+		 */
+
+		/* this check may be unnecessary - retransmit only for TCP */
+		if (sk->protocol == IPPROTO_TCP) {
+		  struct tcphdr *th;
+		  struct iphdr *iph;
+		  int size;
+
+		  iph = (struct iphdr *)(skb->data + dev->hard_header_len);
+		  th = (struct tcphdr *)(((char *)iph) + (iph->ihl << 2));
+		  size = skb->len - (((unsigned char *) th) - skb->data);
+
+		  iph->id = htons(ip_id_count++);
+		  ip_send_check(iph);
+
+		  th->ack_seq = ntohl(sk->acked_seq);
+		  th->window = ntohs(tcp_select_window(sk));
+		  tcp_send_check(th, sk->saddr, sk->daddr, size, sk);
+		}
 
 		/* 
 		 *	If the interface is (still) up and running, kick it. 
@@ -1941,6 +1943,10 @@ int ip_setsockopt(struct sock *sk, int level, int optname, char *optval, int opt
 			if(val<0||val>255)
 				return -EINVAL;
 			sk->ip_tos=val;
+			if(val==IPTOS_LOWDELAY)
+				sk->priority=SOPRI_INTERACTIVE;
+			if(val==IPTOS_THROUGHPUT)
+				sk->priority=SOPRI_BACKGROUND;
 			return 0;
 		case IP_TTL:
 			if(val<1||val>255)

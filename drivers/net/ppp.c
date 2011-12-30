@@ -94,6 +94,7 @@ static char ppp_warning[] = KERN_WARNING "PPP: ALERT! not INUSE! %d\n";
 int ppp_init(struct device *);
 static void ppp_init_ctrl_blk(struct ppp *);
 static int ppp_dev_open(struct device *);
+static int ppp_dev_ioctl(struct device *dev, struct ifreq *ifr);
 static int ppp_dev_close(struct device *);
 static void ppp_kick_tty(struct ppp *);
 
@@ -145,6 +146,7 @@ static int ppp_open(struct tty_struct *);
 static void ppp_close(struct tty_struct *);
 
 #ifdef NEW_TTY_DRIVERS
+static int ppp_receive_room(struct tty_struct *tty);
 static void ppp_receive_buf(struct tty_struct *tty, unsigned char *cp,
 			    char *fp, int count);
 static void ppp_write_wakeup(struct tty_struct *tty);
@@ -238,6 +240,7 @@ ppp_init(struct device *dev)
 
 #ifdef NEW_TTY_DRIVERS
     ppp_ldisc.magic       = TTY_LDISC_MAGIC;
+    ppp_ldisc.receive_room = ppp_receive_room;
     ppp_ldisc.receive_buf = ppp_receive_buf;
     ppp_ldisc.write_wakeup = ppp_write_wakeup;
 #else
@@ -264,6 +267,7 @@ ppp_init(struct device *dev)
   dev->mtu             = PPP_MTU;
   dev->hard_start_xmit = ppp_xmit;
   dev->open            = ppp_dev_open;
+  dev->do_ioctl        = ppp_dev_ioctl;
   dev->stop            = ppp_dev_close;
   dev->get_stats       = ppp_get_stats;
   dev->hard_header     = ppp_header;
@@ -377,9 +381,9 @@ ppp_changedmtu (struct ppp *ppp, int new_mtu, int new_mru)
   PRINTKN (2,(KERN_INFO "ppp: channel %s mtu = %d, mru = %d\n",
 	      dev->name, new_mtu, new_mru));
 	
-  new_xbuff = (unsigned char *) kmalloc(mtu + 4, GFP_KERNEL);
-  new_rbuff = (unsigned char *) kmalloc(mru + 4, GFP_KERNEL);
-  new_cbuff = (unsigned char *) kmalloc(mru + 4, GFP_KERNEL);
+  new_xbuff = (unsigned char *) kmalloc(mtu + 4, GFP_ATOMIC);
+  new_rbuff = (unsigned char *) kmalloc(mru + 4, GFP_ATOMIC);
+  new_cbuff = (unsigned char *) kmalloc(mru + 4, GFP_ATOMIC);
 /*
  *  If the buffers failed to allocate then complain.
  */
@@ -558,11 +562,7 @@ ppp_open(struct tty_struct *tty)
 
   PRINTKN (2,(KERN_INFO "ppp: channel %s open\n", ppp->dev->name));
 
-#ifdef NEW_TTY_DRIVERS
-  return (0);
-#else
   return (ppp->line);
-#endif
 }
 
 /* called when ppp interface goes "up".  here this just means we start
@@ -603,6 +603,32 @@ ppp_dev_close(struct device *dev)
 	      dev->name));
   CHECK_PPP(-ENXIO);
   return 0;
+}
+
+static int ppp_dev_ioctl(struct device *dev, struct ifreq *ifr)
+{
+  struct ppp *ppp = &ppp_ctrl[dev->base_addr];
+  int    error;
+
+  struct stats
+  {
+    struct ppp_stats  ppp_stats;
+    struct slcompress slhc;
+  } *result;
+
+  error = verify_area (VERIFY_READ,
+		       ifr->ifr_ifru.ifru_data,
+		       sizeof (struct stats));
+
+  if (error == 0) {
+    result = (struct stats *) ifr->ifr_ifru.ifru_data;
+
+    memcpy_tofs (&result->ppp_stats, &ppp->stats, sizeof (struct ppp_stats));
+    if (ppp->slcomp)
+      memcpy_tofs (&result->slhc,    ppp->slcomp, sizeof (struct slcompress));
+  }
+
+  return error;
 }
 
 /*************************************************************
@@ -685,12 +711,14 @@ static void ppp_write_wakeup(struct tty_struct *tty)
 		return;
 	}
 
-	if (!ppp->xtail || (ppp->flags & SC_XMIT_BUSY))
+	if (!ppp->xtail)
 		return;
 
 	cli();
-	if (ppp->flags & SC_XMIT_BUSY)
+	if (ppp->flags & SC_XMIT_BUSY) {
+		sti();
 		return;
+	}
 	ppp->flags |= SC_XMIT_BUSY;
 	sti();
 	
@@ -720,7 +748,7 @@ static void ppp_write_wakeup(struct tty_struct *tty)
 
 /* stuff a single character into the receive buffer */
 
-inline void
+static inline void
 ppp_enqueue(struct ppp *ppp, unsigned char c)
 {
   unsigned long flags;
@@ -867,6 +895,12 @@ ppp_unesc(struct ppp *ppp, unsigned char *c, int n)
 }
 
 #else
+static int ppp_receive_room(struct tty_struct *tty)
+{
+	return 65536;  /* We can handle an infinite amount of data. :-) */
+}
+
+
 static void ppp_receive_buf(struct tty_struct *tty, unsigned char *cp,
 			    char *fp, int count)
 {
@@ -886,6 +920,8 @@ static void ppp_receive_buf(struct tty_struct *tty, unsigned char *cp,
   if (ppp_debug >= 5) {
     ppp_print_buffer ("receive buffer", cp, count, KERNEL_DS);
   }
+
+  ppp->stats.rbytes += count;
  
   while (count-- > 0) {
     c = *cp++;
@@ -1371,7 +1407,7 @@ ppp_ioctl(struct tty_struct *tty, struct file *file, unsigned int i,
       PRINTKN (3,(KERN_INFO "ppp_ioctl: set mru to %x\n", temp_i));
       temp_i = (int) get_fs_long (l);
       if (ppp->mru != temp_i)
-	ppp_changedmtu (ppp, ppp->mtu, temp_i);
+	ppp_changedmtu (ppp, ppp->dev->mtu, temp_i);
     }
     break;
 
@@ -1764,8 +1800,7 @@ ppp_xmit(struct sk_buff *skb, struct device *dev)
   ppp_kick_tty(ppp);
 
  done:
-  if (skb->free) 
-    kfree_skb(skb, FREE_WRITE);
+  dev_kfree_skb(skb, FREE_WRITE);
   return 0;
 }
   
@@ -1933,8 +1968,7 @@ ppp_check_fcs(struct ppp *ppp)
 
 static char hex[] = "0123456789ABCDEF";
 
-inline void ppp_print_hex (register char *out, char *in, int count);
-inline void ppp_print_hex (register char *out, char *in, int count)
+static inline void ppp_print_hex (register char *out, char *in, int count)
 {
   register unsigned char next_ch;
 
@@ -1948,8 +1982,7 @@ inline void ppp_print_hex (register char *out, char *in, int count)
   }
 }
 
-inline void ppp_print_char (register char *out, char *in, int count);
-inline void ppp_print_char (register char *out, char *in, int count)
+static inline void ppp_print_char (register char *out, char *in, int count)
 {
   register unsigned char next_ch;
 

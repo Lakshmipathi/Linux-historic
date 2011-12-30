@@ -109,6 +109,7 @@ struct sock {
   volatile unsigned short	mss;       /* current eff. mss - can change */
   volatile unsigned short	user_mss;  /* mss requested by user in ioctl */
   volatile unsigned short	max_window;
+  unsigned long 		window_clamp;
   unsigned short		num;
   volatile unsigned short	cong_window;
   volatile unsigned short	cong_count;
@@ -148,6 +149,8 @@ struct sock {
   char				ax25_retxqi;
   char				ax25_rrtimer;
   char				ax25_timer;
+  unsigned char			ax25_n2;
+  unsigned short		ax25_t1,ax25_t3;
   ax25_digi			*ax25_digipeat;
 #endif  
 /* IP 'private area' or will be eventually */
@@ -178,9 +181,9 @@ struct proto {
   struct sk_buff *	(*rmalloc)(struct sock *sk,
 				    unsigned long size, int force,
 				    int priority);
-  void			(*wfree)(struct sock *sk, void *mem,
+  void			(*wfree)(struct sock *sk, struct sk_buff *skb,
 				 unsigned long size);
-  void			(*rfree)(struct sock *sk, void *mem,
+  void			(*rfree)(struct sock *sk, struct sk_buff *skb,
 				 unsigned long size);
   unsigned long		(*rspace)(struct sock *sk);
   unsigned long		(*wspace)(struct sock *sk);
@@ -260,9 +263,9 @@ extern struct sk_buff		*sock_wmalloc(struct sock *sk,
 extern struct sk_buff		*sock_rmalloc(struct sock *sk,
 					      unsigned long size, int force,
 					      int priority);
-extern void			sock_wfree(struct sock *sk, void *mem,
+extern void			sock_wfree(struct sock *sk, struct sk_buff *skb,
 					   unsigned long size);
-extern void			sock_rfree(struct sock *sk, void *mem,
+extern void			sock_rfree(struct sock *sk, struct sk_buff *skb,
 					   unsigned long size);
 extern unsigned long		sock_rspace(struct sock *sk);
 extern unsigned long		sock_wspace(struct sock *sk);

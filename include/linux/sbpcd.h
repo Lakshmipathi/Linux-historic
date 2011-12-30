@@ -8,15 +8,32 @@
  *                                 sbpcd=0x230,SoundBlaster
  *                             or
  *                                 sbpcd=0x300,LaserMate
- * these strings are case sensitive !!!
+ *                             or
+ *                                 sbpcd=0x330,SPEA
+ *
+ *  and, if you have a second CDROM controller board,
+ *                                 sbpcd2=0x310,LaserMate
+ *  and so on.
+ *
+ * These strings are case sensitive !!!
  */
 
-/* 
- * change this to select the type of your interface board:
+/*
+ * put your CDROM port base address into CDROM_PORT
+ * and specify the type of your interface in SBPRO.
+ *
+ * SBPRO addresses typically are 0x0230 (=0x220+0x10), 0x0250, ...
+ * LASERMATE (CI-101P) adresses typically are 0x0300, 0x0310, ...
+ * SPEA addresses are 0x320, 0x330, 0x340, 0x350
+ * there are some soundcards on the market with 0x0630, 0x0650, ...
+ *
+ * example: if your SBPRO audio address is 0x220, specify 0x230.
+ *
  *
  * set SBPRO to 1 for "true" SoundBlaster card
  * set SBPRO to 0 for "poor" (no sound) interface cards
  *                and for "compatible" soundcards.
+ * set SBPRO to 2 for the SPEA Media FX card
  *
  * most "compatible" sound boards like Galaxy need to set SBPRO to 0 !!!
  * if SBPRO gets set wrong, the drive will get found - but any
@@ -27,32 +44,72 @@
  * (currently I do not know any "compatible" with SBPRO 1)
  * then I can include better information with the next release.
  */
-#define SBPRO     1
-
-/*
- * put your CDROM port base address here:
- * SBPRO addresses typically are 0x0230 (=0x220+0x10), 0x0250, ...
- * LASERMATE (CI-101P) adresses typically are 0x0300, 0x0310, ...
- * there are some soundcards on the market with 0x0630, 0x0650, ...
- *
- * example: if your SBPRO audio address is 0x220, specify 0x230.
- *
- */
+#if !(SBPCD_ISSUE-1) /* first (or if you have only one) interface board: */
 #define CDROM_PORT 0x0230
+#define SBPRO     1
+#endif
 
+/* ignore the rest if you have only one interface board & driver */
+
+#if !(SBPCD_ISSUE-2) /* second interface board: */
+#define CDROM_PORT 0x0370
+#define SBPRO     0
+#endif
+#if !(SBPCD_ISSUE-3) /* third interface board: */
+#define CDROM_PORT 0x0330
+#define SBPRO     0
+#endif
+#if !(SBPCD_ISSUE-4) /* fourth interface board: */
+#define CDROM_PORT 0x0340
+#define SBPRO     0
+#endif
 
 /*==========================================================================*/
 /*==========================================================================*/
 /*
  * nothing to change below here if you are not experimenting
  */
+#ifndef _LINUX_SBPCD_H
+
+#define _LINUX_SBPCD_H
+
+/*==========================================================================*/
+/*==========================================================================*/
+/*
+ * to fork and execute a function after some elapsed time:
+ * one "jifs" unit is 10 msec.
+ */
+#undef MY_TIMER
+#undef SET_TIMER
+#undef CLEAR_TIMER
+
+#if !(SBPCD_ISSUE-1)
+#define MY_TIMER SBPCD_TIMER
+#endif
+#if !(SBPCD_ISSUE-2)
+#define MY_TIMER SBPCD2_TIMER
+#endif
+#if !(SBPCD_ISSUE-3)
+#define MY_TIMER SBPCD3_TIMER
+#endif
+#if !(SBPCD_ISSUE-4)
+#define MY_TIMER SBPCD4_TIMER
+#endif
+
+#define SET_TIMER(func, jifs) \
+        ((timer_table[MY_TIMER].expires = jiffies + jifs), \
+        (timer_table[MY_TIMER].fn = func), \
+        (timer_active |= 1<<MY_TIMER))
+
+#define CLEAR_TIMER	timer_active &= ~(1<<MY_TIMER)
+
 /*==========================================================================*/
 /*==========================================================================*/
 /*
  * Debug output levels
  */
 #define DBG_INF		1	/* necessary information */
-#define DBG_IRQ		2	/* interrupt trace */
+#define DBG_BSZ		2	/* BLOCK_SIZE trace */
 #define DBG_REA		3	/* "read" status trace */
 #define DBG_CHK		4	/* "media check" trace */
 #define DBG_TIM		5	/* datarate timer test */
@@ -75,7 +132,9 @@
 #define DBG_XA 		22	/* XA mode debugging */
 #define DBG_LCK		23	/* door (un)lock info */
 #define DBG_SQ 		24	/* dump SubQ frame */
-#define DBG_000		25	/* unnecessary information */
+#define DBG_AUD		25      /* "read audio" debugging */
+#define DBG_SEQ		26      /* Sequoia interface configuration trace */
+#define DBG_000		27      /* unnecessary information */
 
 /*==========================================================================*/
 /*==========================================================================*/
@@ -107,13 +166,13 @@
 /*
  * disk states (bits of diskstate_flags):
  */
-#define upc_valid (DS[d].diskstate_flags&upc_bit)
-#define volume_valid (DS[d].diskstate_flags&volume_bit)
-#define toc_valid (DS[d].diskstate_flags&toc_bit)
-#define multisession_valid (DS[d].diskstate_flags&multisession_bit)
-#define cd_size_valid (DS[d].diskstate_flags&cd_size_bit)
-#define subq_valid (DS[d].diskstate_flags&subq_bit)
-#define frame_size_valid (DS[d].diskstate_flags&frame_size_bit)
+#define upc_valid (DriveStruct[d].diskstate_flags&upc_bit)
+#define volume_valid (DriveStruct[d].diskstate_flags&volume_bit)
+#define toc_valid (DriveStruct[d].diskstate_flags&toc_bit)
+#define multisession_valid (DriveStruct[d].diskstate_flags&multisession_bit)
+#define cd_size_valid (DriveStruct[d].diskstate_flags&cd_size_bit)
+#define subq_valid (DriveStruct[d].diskstate_flags&subq_bit)
+#define frame_size_valid (DriveStruct[d].diskstate_flags&frame_size_bit)
 
 
 /*
@@ -137,13 +196,13 @@
 /*
  * used drive states:
  */
-#define st_door_closed (DS[d].status_byte&p_door_closed)
-#define st_caddy_in (DS[d].status_byte&p_caddy_in)
-#define st_spinning (DS[d].status_byte&p_spinning)
-#define st_check (DS[d].status_byte&p_check)
-#define st_busy (DS[d].status_byte&p_busy_new)
-#define st_door_locked (DS[d].status_byte&p_door_locked)
-#define st_diskok (DS[d].status_byte&p_disk_ok)
+#define st_door_closed (DriveStruct[d].status_byte&p_door_closed)
+#define st_caddy_in (DriveStruct[d].status_byte&p_caddy_in)
+#define st_spinning (DriveStruct[d].status_byte&p_spinning)
+#define st_check (DriveStruct[d].status_byte&p_check)
+#define st_busy (DriveStruct[d].status_byte&p_busy_new)
+#define st_door_locked (DriveStruct[d].status_byte&p_door_locked)
+#define st_diskok (DriveStruct[d].status_byte&p_disk_ok)
 
 /*
  * bits of the CDi_status register:
@@ -175,7 +234,7 @@
 /*
  * drv_099 and drv_100 are the "new" drives
  */
-#define new_drive (DS[d].drv_type&0x10)
+#define new_drive (DriveStruct[d].drv_type&0x10)
 
 /*
  * audio states:
@@ -199,27 +258,16 @@
 #define READ_M1  0x01 /* "data mode 1": 2048 bytes per frame */
 #define READ_M2  0x02 /* "data mode 2": 12+2048+280 bytes per frame */
 #define READ_SC  0x04 /* "subchannel info": 96 bytes per frame */
+#define READ_AU  0x08 /* "audio frame": 2352 bytes per frame */
 
 /*
  * sense byte: used only if new_drive
  *                  only during cmd 09 00 xx ah al 00 00
  *
  *          values: 00
- *                  82
+ *                  82 "raw audio" mode
  *                  xx from infobuf[0] after 85 00 00 00 00 00 00
  */
-
-
-#define CD_MINS                   75  /* minutes per CD                  */
-#define CD_SECS                   60  /* seconds per minutes             */
-#define CD_FRAMES                 75  /* frames per second               */
-#define CD_FRAMESIZE            2048  /* bytes per frame, data mode      */
-#define CD_FRAMESIZE_XA         2340  /* bytes per frame, "xa" mode      */
-#define CD_FRAMESIZE_RAW        2352  /* bytes per frame, "raw" mode     */
-#define CD_FRAMESIZE_SUB          96  /* subchannel data size            */
-#define CD_BLOCK_OFFSET          150  /* offset of first logical frame   */
-#define CD_XA_HEAD                12  /* header size of XA frame         */
-#define CD_XA_TAIL               280  /* tail size of XA frame           */
 
 /* audio status (bin) */
 #define aud_00 0x00 /* Audio status byte not supported or not valid */
@@ -391,7 +439,6 @@ Read XA Parameter:
 
 /*
  * highest allowed drive number (MINOR+1)
- * currently only one controller, maybe later up to 4
  */
 #define NR_SBPCD 4
 
@@ -399,17 +446,6 @@ Read XA Parameter:
  * we try to never disable interrupts - seems to work
  */
 #define SBPCD_DIS_IRQ 0
-
-/*
- * we don't use the IRQ line - leave it free for the sound driver
- */
-#define SBPCD_USE_IRQ	0
-
-/*
- * you can set the interrupt number of your interface board here:
- * It is not used at this time. No need to set it correctly.
- */
-#define SBPCD_INTR_NR	7            
 
 /*
  * "write byte to port"
@@ -427,22 +463,9 @@ Read XA Parameter:
 
 /*==========================================================================*/
 /*
- * to fork and execute a function after some elapsed time:
- * one "jifs" unit is 10 msec.
- */
-#define SET_TIMER(func, jifs) \
-        ((timer_table[SBPCD_TIMER].expires = jiffies + jifs), \
-        (timer_table[SBPCD_TIMER].fn = func), \
-        (timer_active |= 1<<SBPCD_TIMER))
-
-#define CLEAR_TIMER	timer_active &= ~(1<<SBPCD_TIMER)
-
-/*==========================================================================*/
-/*
  * Creative Labs Programmers did this:
  */
 #define MAX_TRACKS	120 /* why more than 99? */
-
 
 /*==========================================================================*/
 /*
@@ -463,9 +486,4 @@ typedef union _blk
 BLK;
 
 /*==========================================================================*/
-
-
-
-
-
-
+#endif _LINUX_SBPCD_H

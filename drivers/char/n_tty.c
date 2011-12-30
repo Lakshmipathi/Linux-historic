@@ -482,6 +482,10 @@ static inline void n_tty_receive_char(struct tty_struct *tty, unsigned char c)
 			put_tty_queue(c, tty);
 			tty->canon_head = tty->read_head;
 			tty->canon_data++;
+			if (tty->fasync)
+				kill_fasync(tty->fasync, SIGIO);
+			if (tty->read_wait)
+				wake_up_interruptible(&tty->read_wait);
 			return;
 		}
 	}
@@ -560,8 +564,7 @@ static void n_tty_receive_buf(struct tty_struct *tty, unsigned char *cp,
 			tty->driver.flush_chars(tty);
 	}
 
-	if (tty->icanon ? tty->canon_data :
-	    (tty->read_cnt >= tty->minimum_to_wake)) {
+	if (!tty->icanon && (tty->read_cnt >= tty->minimum_to_wake)) {
 		if (tty->fasync)
 			kill_fasync(tty->fasync, SIGIO);
 		if (tty->read_wait)
@@ -953,7 +956,8 @@ static int normal_select(struct tty_struct * tty, struct inode * inode,
 {
 	switch (sel_type) {
 		case SEL_IN:
-			if (input_available_p(tty, MIN_CHAR(tty)))
+			if (input_available_p(tty, TIME_CHAR(tty) ? 0 :
+					      MIN_CHAR(tty)))
 				return 1;
 			/* fall through */
 		case SEL_EX:
@@ -963,9 +967,12 @@ static int normal_select(struct tty_struct * tty, struct inode * inode,
 				return 1;
 			if (tty_hung_up_p(file))
 				return 1;
-			if (!tty->read_wait)
-				tty->minimum_to_wake = MIN_CHAR(tty) ?
-					MIN_CHAR(tty) : 1;
+			if (!tty->read_wait) {
+				if (MIN_CHAR(tty) && !TIME_CHAR(tty))
+					tty->minimum_to_wake = MIN_CHAR(tty);
+				else
+					tty->minimum_to_wake = 1;
+			}
 			select_wait(&tty->read_wait, wait);
 			return 0;
 		case SEL_OUT:

@@ -36,6 +36,8 @@ __asm__ __volatile__("decl _intr_count")
 extern int EISA_bus;
 #define MCA_bus 0
 
+#include <linux/binfmts.h>
+#include <linux/personality.h>
 #include <linux/tasks.h>
 #include <asm/system.h>
 
@@ -89,6 +91,7 @@ extern unsigned long avenrun[];		/* Load averages */
 #include <linux/resource.h>
 #include <linux/vm86.h>
 #include <linux/math_emu.h>
+#include <linux/ptrace.h>
 
 #define TASK_RUNNING		0
 #define TASK_INTERRUPTIBLE	1
@@ -227,7 +230,6 @@ struct mm_struct {
 	short swap_page;		/* current page */
 #endif NEW_SWAP
 	struct vm_area_struct * mmap;
-	struct vm_area_struct * stk_vma;
 };
 
 #define INIT_MM { \
@@ -239,7 +241,7 @@ struct mm_struct {
 /* ?_flt */	0, 0, 0, 0, \
 		0, \
 /* swap */	0, 0, 0, 0, 0, \
-		NULL, NULL }
+		NULL }
 
 struct task_struct {
 /* these are hardcoded - don't touch */
@@ -251,13 +253,15 @@ struct task_struct {
 	unsigned long flags;	/* per process flags, defined below */
 	int errno;
 	int debugreg[8];  /* Hardware debugging registers */
+	struct exec_domain *exec_domain;
 /* various fields */
+	struct linux_binfmt *binfmt;
 	struct task_struct *next_task, *prev_task;
 	struct sigaction sigaction[32];
 	unsigned long saved_kernel_stack;
 	unsigned long kernel_stack_page;
 	int exit_code, exit_signal;
-	int elf_executable:1;
+	unsigned long personality;
 	int dumpable:1;
 	int did_exec:1;
 	int pid,pgrp,session,leader;
@@ -322,6 +326,8 @@ struct task_struct {
 #define INIT_TASK \
 /* state etc */	{ 0,15,15,0,0,0,0, \
 /* debugregs */ { 0, },            \
+/* exec domain */&default_exec_domain, \
+/* binfmt */	NULL, \
 /* schedlink */	&init_task,&init_task, \
 /* signals */	{{ 0, },}, \
 /* stack */	0,(unsigned long) &init_kernel_stack, \

@@ -71,6 +71,7 @@ extern char empty_zero_page[PAGE_SIZE];
 extern int vsprintf(char *,const char *,va_list);
 extern void init(void);
 extern void init_IRQ(void);
+extern void init_modules(void);
 extern long kmalloc_init (long,long);
 extern long blk_dev_init(long,long);
 extern long chr_dev_init(long,long);
@@ -90,6 +91,7 @@ extern void tmc8xx_setup(char *str, int *ints);
 extern void t128_setup(char *str, int *ints);
 extern void generic_NCR5380_setup(char *str, int *intr);
 extern void aha152x_setup(char *str, int *ints);
+extern void scsi_luns_setup(char *str, int *ints);
 extern void sound_setup(char *str, int *ints);
 #ifdef CONFIG_SBPCD
 extern void sbpcd_setup(char *str, int *ints);
@@ -173,6 +175,9 @@ struct {
 	{ "reserve=", reserve_setup },
 #ifdef CONFIG_INET
 	{ "ether=", eth_setup },
+#endif
+#ifdef CONFIG_SCSI
+	{ "max_scsi_luns=", scsi_luns_setup },
 #endif
 #ifdef CONFIG_BLK_DEV_HD
 	{ "hd=", hd_setup },
@@ -395,6 +400,7 @@ asmlinkage void start_kernel(void)
 	init_IRQ();
 	sched_init();
 	parse_options(command_line);
+	init_modules();
 #ifdef CONFIG_PROFILE
 	prof_buffer = (unsigned long *) memory_start;
 	prof_len = (unsigned long) &end;

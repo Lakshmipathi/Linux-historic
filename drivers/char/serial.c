@@ -499,6 +499,10 @@ static void rs_interrupt(int irq)
 	int pass_counter = 0;
 	struct async_struct *end_mark = 0;
 
+#ifdef SERIAL_DEBUG_INTR
+	printk("rs_interrupt(%d)...", irq);
+#endif
+	
 	info = IRQ_ports[irq];
 	if (!info)
 		return;
@@ -511,6 +515,8 @@ static void rs_interrupt(int irq)
 			goto next;
 		}
 		end_mark = 0;
+
+		info->last_active = jiffies;
 
 		status = serial_inp(info, UART_LSR);
 		if (status & UART_LSR_DR)
@@ -543,6 +549,10 @@ static void rs_interrupt_single(int irq)
 	int pass_counter = 0;
 	struct async_struct * info;
 	
+#ifdef SERIAL_DEBUG_INTR
+	printk("rs_interrupt_single(%d)...", irq);
+#endif
+	
 	info = IRQ_ports[irq];
 	if (!info || !info->tty)
 		return;
@@ -561,6 +571,7 @@ static void rs_interrupt_single(int irq)
 			break;
 		}
 	} while (!(serial_in(info, UART_IIR) & UART_IIR_NO_INT));
+	info->last_active = jiffies;
 }
 
 #else /* CONFIG_SERIAL_NEW_ISR */
@@ -574,6 +585,11 @@ static void rs_interrupt(int irq)
 	struct async_struct * info;
 	int done = 1, pass_counter = 0;
 
+	
+#ifdef SERIAL_DEBUG_INTR
+	printk("rs_interrupt(%d)...", irq);
+#endif
+	
 	info = IRQ_ports[irq];
 	if (!info)
 		return;
@@ -625,6 +641,11 @@ static void rs_interrupt_single(int irq)
 	int status;
 	struct async_struct * info;
 
+	
+#ifdef SERIAL_DEBUG_INTR
+	printk("rs_interrupt_single(%d)...", irq);
+#endif
+	
 	info = IRQ_ports[irq];
 	if (!info || !info->tty)
 		return;
@@ -697,13 +718,39 @@ static void do_softint(void *private)
  */
 static void rs_timer(void)
 {
+	static unsigned long last_strobe = 0;
+	struct async_struct *info;
+	unsigned int	i;
+
+	if ((jiffies - last_strobe) >= 60*HZ) {
+		for (i=1; i < 16; i++) {
+			info = IRQ_ports[i];
+			if (!info)
+				continue;
+			cli();
+			if (info->next_port) {
+				do {
+					serial_out(info, UART_IER, 0);
+					info->IER |= UART_IER_THRI;
+					serial_out(info, UART_IER, info->IER);
+					info = info->next_port;
+				} while (info);
+				rs_interrupt(i);
+			} else
+				rs_interrupt_single(i);
+			sti();
+		}
+	}
+	last_strobe = jiffies;
+	timer_table[RS_TIMER].expires = jiffies + 60 * HZ;
+	timer_active |= 1 << RS_TIMER;
+
 	if (IRQ_ports[0]) {
 		cli();
 		rs_interrupt(0);
 		sti();
 
 		timer_table[RS_TIMER].expires = jiffies + IRQ_timeout[0] - 2;
-		timer_active |= 1 << RS_TIMER;
 	}
 }
 
@@ -757,7 +804,7 @@ static void free_all_interrupts(int irq_lines)
 /*
  * This routine figures out the correct timeout for a particular IRQ.
  * It uses the smallest timeout of all of the serial ports in a
- * particular interrupt chain.
+ * particular interrupt chain.  Now only used for IRQ 0....
  */
 static void figure_IRQ_timeout(int irq)
 {
@@ -824,8 +871,13 @@ static int startup(struct async_struct * info)
 	 * here.
 	 */
 	if (serial_inp(info, UART_LSR) == 0xff) {
-		restore_flags(flags);
-		return -ENODEV;
+			restore_flags(flags);
+		if (suser()) {
+			if (info->tty)
+				set_bit(TTY_IO_ERROR, &info->tty->flags);
+			return 0;
+		} else
+			return -ENODEV;
 	}
 	
 	/*
@@ -845,7 +897,13 @@ static int startup(struct async_struct * info)
 		retval = irqaction(info->irq,&sa);
 		if (retval) {
 			restore_flags(flags);
-			return retval;
+			if (suser()) {
+				if (info->tty)
+					set_bit(TTY_IO_ERROR,
+						&info->tty->flags);
+				return 0;
+			} else
+				return retval;
 		}
 	}
 
@@ -908,10 +966,8 @@ static int startup(struct async_struct * info)
 	/*
 	 * Set up serial timers...
 	 */
-	if (info->irq == 0) {
-		timer_table[RS_TIMER].expires = jiffies + IRQ_timeout[0];
-		timer_active |= 1 << RS_TIMER;
-	}
+	timer_table[RS_TIMER].expires = jiffies + 2;
+	timer_active |= 1 << RS_TIMER;
 
 	/*
 	 * and set the speed of the serial port
@@ -1006,8 +1062,8 @@ static void shutdown(struct async_struct * info)
 	cli();
 	
 	if (!info->tty || (info->tty->termios->c_cflag & HUPCL)) {
-		info->MCR &= ~UART_MCR_DTR;
-		info->MCR_noint &= ~UART_MCR_DTR;
+		info->MCR &= ~(UART_MCR_DTR|UART_MCR_RTS);
+		info->MCR_noint &= ~(UART_MCR_DTR|UART_MCR_RTS);
 	}
 	serial_outp(info, UART_MCR, info->MCR_noint);
 
@@ -1365,10 +1421,13 @@ static int set_serial_info(struct async_struct * info,
 	}
 
 	/* Make sure address is not already in use */
-	for (i = 0 ; i < NR_PORTS; i++)
-		if ((info != &rs_table[i]) &&
-		    (rs_table[i].port == new_serial.port) && rs_table[i].type)
-			return -EADDRINUSE;
+	if (new_serial.type) {
+		for (i = 0 ; i < NR_PORTS; i++)
+			if ((info != &rs_table[i]) &&
+			    (rs_table[i].port == new_serial.port) &&
+			    rs_table[i].type)
+				return -EADDRINUSE;
+	}
 
 	if ((change_port || change_irq) && (info->count > 1))
 		return -EBUSY;
@@ -1633,6 +1692,15 @@ static int rs_ioctl(struct tty_struct *tty, struct file * file,
 				rs_wild_int_mask = check_wild_interrupts(0);
 			return 0;
 
+		case TIOCSERGSTRUCT:
+			error = verify_area(VERIFY_WRITE, (void *) arg,
+						sizeof(struct async_struct));
+			if (error)
+				return error;
+			memcpy_tofs((struct async_struct *) arg,
+				    info, sizeof(struct async_struct));
+			return 0;
+			
 		default:
 			return -ENOIOCTLCMD;
 		}

@@ -56,9 +56,12 @@ loopback_xmit(struct sk_buff *skb, struct device *dev)
   }
   dev->tbusy = 1;
   sti();
+  
+  /* FIXME: Optimise so buffers with skb->free=1 are not copied but
+     instead are lobbed from tx queue to rx queue */
 
   done = dev_rint(skb->data, skb->len, 0, dev);
-  if (skb->free) kfree_skb(skb, FREE_WRITE);
+  dev_kfree_skb(skb, FREE_WRITE);
 
   while (done != 1) {
 	done = dev_rint(NULL, 0, 0, dev);
@@ -125,7 +128,7 @@ loopback_init(struct device *dev)
 #endif
 
   /* New-style flags. */
-  dev->flags		= IFF_LOOPBACK;
+  dev->flags		= IFF_LOOPBACK|IFF_BROADCAST;
   dev->family		= AF_INET;
 #ifdef CONFIG_INET    
   dev->pa_addr		= in_aton("127.0.0.1");

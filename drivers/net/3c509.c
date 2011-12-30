@@ -94,7 +94,9 @@ int el3_probe(struct device *dev)
 
 	/* First check for a board on the EISA bus. */
 	if (EISA_bus) {
-		for (ioaddr = 0x1000; ioaddr < 0x9000; ioaddr += 0x1000) {
+		static int eisa_addr;
+		for (ioaddr=0x1000 ; ioaddr < 0x9000; ioaddr += 0x1000) {
+			eisa_addr = ioaddr;
 			/* Check the standard EISA ID register for an encoded '3Com'. */
 			if (inw(ioaddr + 0xC80) != 0x6d50)
 				continue;
@@ -388,8 +390,7 @@ el3_start_xmit(struct sk_buff *skb, struct device *dev)
 			outw(0x9000 + 1536, ioaddr + EL3_CMD);
 	}
 
-	if (skb->free)
-		kfree_skb (skb, FREE_WRITE);
+	dev_kfree_skb (skb, FREE_WRITE);
 
 	/* Clear the Tx status stack. */
 	{
@@ -669,7 +670,7 @@ el3_close(struct device *dev)
 #ifdef MODULE
 char kernel_version[] = UTS_RELEASE;
 static struct device dev_3c509 = {
-	"" /*"3c509"*/, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, el3_probe };
+	"        " /*"3c509"*/, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, el3_probe };
 
 int
 init_module(void)

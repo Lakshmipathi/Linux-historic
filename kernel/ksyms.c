@@ -2,6 +2,9 @@
  * Herein lies all the functions/variables that are "exported" for linkage
  * with dynamically loaded kernel modules.
  *			Jon.
+ *
+ * Stacked module support and unified symbol table added by
+ * Bjorn Ekwall <bj0rn@blox.se>
  */
 
 #include <linux/autoconf.h>
@@ -10,17 +13,22 @@
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/malloc.h>
-#include <linux/binfmts.h>
 #include <linux/ptrace.h>
 #include <linux/sys.h>
 #include <linux/utsname.h>
 #include <linux/interrupt.h>
+#include <linux/binfmts.h>
+#include <linux/personality.h>
+#include <linux/module.h>
 #ifdef CONFIG_INET
 #include <linux/netdevice.h>
 #endif
+
+#include <asm/irq.h>
   
 extern void *sys_call_table;
 
+/* must match struct internal_symbol !!! */
 #define X(name)	{ (void *) &name, "_" #name }
 
 #ifdef CONFIG_FTAPE
@@ -28,20 +36,19 @@ extern char * ftape_big_buffer;
 extern void (*do_floppy)(void);
 #endif
 
-#ifdef CONFIG_BINFMT_IBCS
+extern int request_dma(unsigned int dmanr);
+extern void free_dma(unsigned int dmanr);
+
 extern int do_execve(char * filename, char ** argv, char ** envp,
 		struct pt_regs * regs);
 extern void flush_old_exec(struct linux_binprm * bprm);
 extern int open_inode(struct inode * inode, int mode);
 extern int read_exec(struct inode *inode, unsigned long offset,
 	char * addr, unsigned long count);
-
-extern void check_pending(int signum);
 extern int do_signal(unsigned long oldmask, struct pt_regs * regs);
-extern int (*ibcs_invmapsig)(int);
 
 extern void (* iABI_hook)(struct pt_regs * regs);
-#endif
+
 #ifdef CONFIG_INET
 extern int register_netdev(struct device *);
 extern void unregister_netdev(struct device *);
@@ -53,20 +60,24 @@ extern void netif_rx(struct sk_buff *);
 extern int dev_rint(unsigned char *, long, int, struct device *);
 extern void dev_tint(struct device *);
 extern struct device *irq2dev_map[];
+extern void dev_kfree_skb(struct sk_buff *, int);
 #endif
 
-struct {
-	void *addr;
-	const char *name;
-} symbol_table[] = {
+struct symbol_table symbol_table = { 0, 0, 0, /* for stacked module support */
+	{
+	/* stackable module support */
+	X(rename_module_symbol),
+
 	/* system info variables */
 	X(EISA_bus),
 	X(wp_works_ok),
 
 	/* process memory management */
-	X(__verify_write),
+	X(verify_area),
 	X(do_mmap),
 	X(do_munmap),
+	X(insert_vm_struct),
+	X(zeromap_page_range),
 
 	/* internal kernel memory management */
 	X(__get_free_pages),
@@ -94,12 +105,28 @@ struct {
 	X(register_filesystem),
 	X(unregister_filesystem),
 
+	/* executable format registration */
+	X(register_binfmt),
+	X(unregister_binfmt),
+
+	/* execution environment registration */
+	X(lookup_exec_domain),
+	X(register_exec_domain),
+	X(unregister_exec_domain),
+
 	/* interrupt handling */
+	X(irqaction),
 	X(request_irq),
 	X(free_irq),
+	X(enable_irq),
+	X(disable_irq),
 	X(bh_active),
 	X(bh_mask),
 
+	/* dma handling */
+	X(request_dma),
+	X(free_dma),	
+	
 	/* process management */
 	X(wake_up),
 	X(wake_up_interruptible),
@@ -115,24 +142,8 @@ struct {
 	X(system_utsname),
 	X(sys_call_table),
 
-#ifdef CONFIG_FTAPE
-	/* The next labels are needed for ftape driver.  */
-	X(ftape_big_buffer),
-	X(do_floppy),
-#endif
-
-#ifdef CONFIG_BINFMT_IBCS
-/*
- * The following are needed if iBCS support is modular rather than
- * compiled in.
- */
-	/* Emulator hooks. */
-	X(iABI_hook),
-	X(ibcs_invmapsig),
-
 	/* Signal interfaces */
 	X(do_signal),
-	X(check_pending),
 	X(send_sig),
 
 	/* Program loader interfaces */
@@ -141,16 +152,17 @@ struct {
 	X(create_tables),
 	X(do_execve),
 	X(flush_old_exec),
-	X(formats),
-	X(insert_vm_struct),
 	X(open_inode),
 	X(read_exec),
-	X(zeromap_page_range),
 
 	/* Miscellaneous access points */
 	X(si_meminfo),
-#endif
 
+#ifdef CONFIG_FTAPE
+	/* The next labels are needed for ftape driver.  */
+	X(ftape_big_buffer),
+	X(do_floppy),
+#endif
 #ifdef CONFIG_INET
 	/* support for loadable net drivers */
 	X(register_netdev),
@@ -163,7 +175,18 @@ struct {
 	X(dev_rint),
 	X(dev_tint),
 	X(irq2dev_map),
+	X(dev_kfree_skb),
 #endif
+
+	/********************************************************
+	 * Do not add anything below this line,
+	 * as the stacked modules depend on this!
+	 */
+	{ NULL, NULL } /* mark end of table */
+	},
+	{ NULL, NULL } /* no module refs */
 };
 
+/*
 int symbol_table_size = sizeof (symbol_table) / sizeof (symbol_table[0]);
+*/
