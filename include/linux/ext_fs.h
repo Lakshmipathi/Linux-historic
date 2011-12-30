@@ -1,30 +1,16 @@
+#ifndef _LINUX_EXT_FS_H
+#define _LINUX_EXT_FS_H
+
 /*
  * The ext filesystem constants/structures
  */
 
-#ifndef _EXT_FS_H
-#define _EXT_FS_H
-
-#include <sys/types.h>
-
-/*
- * Free blocks/inodes management style
- *
- * One of these two constants must be defined
- *
- */
-/* #define EXTFS_BITMAP	*/	/* use a bitmap */
-#define EXTFS_FREELIST		/* use a linked list */
-
 #define EXT_NAME_LEN 255
 #define EXT_ROOT_INO 1
 
-#define EXT_I_MAP_SLOTS 8
-#define EXT_Z_MAP_SLOTS 8
 #define EXT_SUPER_MAGIC 0x137D
 
 #define EXT_INODES_PER_BLOCK ((BLOCK_SIZE)/(sizeof (struct ext_inode)))
-/* #define EXT_DIR_ENTRIES_PER_BLOCK ((BLOCK_SIZE)/(sizeof (struct ext_dir_entry))) */
 
 struct ext_inode {
 	unsigned short i_mode;
@@ -51,16 +37,10 @@ struct ext_free_block {
 struct ext_super_block {
 	unsigned long s_ninodes;
 	unsigned long s_nzones;
-#ifdef EXTFS_BITMAP
-	unsigned long s_imap_blocks;
-	unsigned long s_zmap_blocks;
-#endif
-#ifdef EXTFS_FREELIST
 	unsigned long s_firstfreeblock;
 	unsigned long s_freeblockscount;
 	unsigned long s_firstfreeinode;
 	unsigned long s_freeinodescount;
-#endif
 	unsigned long s_firstdatazone;
 	unsigned long s_log_zone_size;
 	unsigned long s_max_size;
@@ -94,24 +74,28 @@ extern int ext_link(struct inode * oldinode, struct inode * dir, const char * na
 extern int ext_mknod(struct inode * dir, const char * name, int len, int mode, int rdev);
 extern int ext_rename(struct inode * old_dir, const char * old_name, int old_len,
 	struct inode * new_dir, const char * new_name, int new_len);
-extern struct inode * ext_new_inode(int dev);
+extern struct inode * ext_new_inode(const struct inode * dir);
 extern void ext_free_inode(struct inode * inode);
 extern unsigned long ext_count_free_inodes(struct super_block *sb);
-extern int ext_new_block(int dev);
-extern int ext_free_block(int dev, int block);
+extern int ext_new_block(struct super_block * sb);
+extern void ext_free_block(struct super_block * sb, int block);
 extern unsigned long ext_count_free_blocks(struct super_block *sb);
 
-extern int ext_create_block(struct inode *, int);
 extern int ext_bmap(struct inode *,int);
+
+extern struct buffer_head * ext_getblk(struct inode *, int, int);
+extern struct buffer_head * ext_bread(struct inode *, int, int);
 
 extern void ext_truncate(struct inode *);
 extern void ext_put_super(struct super_block *);
 extern void ext_write_super(struct super_block *);
-extern struct super_block *ext_read_super(struct super_block *,void *);
+extern struct super_block *ext_read_super(struct super_block *,void *,int);
 extern void ext_read_inode(struct inode *);
 extern void ext_write_inode(struct inode *);
 extern void ext_put_inode(struct inode *);
 extern void ext_statfs(struct super_block *, struct statfs *);
+extern int ext_sync_inode(struct inode *);
+extern int ext_sync_file(struct inode *, struct file *);
 
 extern int ext_lseek(struct inode *, struct file *, off_t, int);
 extern int ext_read(struct inode *, struct file *, char *, int);
@@ -120,11 +104,5 @@ extern int ext_write(struct inode *, struct file *, char *, int);
 extern struct inode_operations ext_file_inode_operations;
 extern struct inode_operations ext_dir_inode_operations;
 extern struct inode_operations ext_symlink_inode_operations;
-extern struct inode_operations ext_chrdev_inode_operations;
-extern struct inode_operations ext_blkdev_inode_operations;
-extern struct inode_operations ext_fifo_inode_operations;
-
-extern struct file_operations ext_file_operations;
-extern struct file_operations ext_dir_operations;
 
 #endif

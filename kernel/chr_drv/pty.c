@@ -1,57 +1,49 @@
 /*
  *  linux/kernel/chr_drv/pty.c
  *
- *  (C) 1991  Linus Torvalds
+ *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
 /*
  *	pty.c
  *
- * This module implements the pty functions
- *	void mpty_write(struct tty_struct * queue);
- *	void spty_write(struct tty_struct * queue);
+ * This module exports the following pty function:
+ * 
+ * 	int  pty_open(struct tty_struct * tty, struct file * filp);
  */
 
-#include <errno.h>
-
+#include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/tty.h>
 #include <linux/fcntl.h>
+#include <linux/interrupt.h>
 
 #include <asm/system.h>
-#include <asm/io.h>
+#include <asm/bitops.h>
 
-int pty_open(unsigned int dev, struct file * filp)
+static void pty_close(struct tty_struct * tty, struct file * filp)
 {
-	struct tty_struct * tty;
-
-	tty = tty_table + dev;
-	if (!tty->link)
-		return -ENODEV;
-	wake_up(&tty->read_q->proc_list);
-	if (filp->f_flags & O_NDELAY)
-		return 0;
-	if (IS_A_PTY_MASTER(dev)) {
-		tty->link->count++;
-		return 0;
+	if (!tty)
+		return;
+	if (IS_A_PTY_MASTER(tty->line)) {
+		if (tty->count > 1)
+			return;
+	} else {
+		if (tty->count > 2)
+			return;
 	}
-	while (!tty->link->count && !(current->signal & ~current->blocked))
-		interruptible_sleep_on(&tty->link->read_q->proc_list);
-	if (!tty->link->count)
-		return -ERESTARTSYS;
-	return 0;
-}
-
-void pty_close(unsigned int dev, struct file * filp)
-{
-	struct tty_struct * tty;
-
-	tty = tty_table + dev;
-	wake_up(&tty->read_q->proc_list);
-	if (IS_A_PTY_MASTER(dev)) {
-		tty->link->count--;
-		if (tty->link->pgrp > 0)
-			kill_pg(tty->link->pgrp,SIGHUP,1);
+	wake_up_interruptible(&tty->secondary.proc_list);
+	wake_up_interruptible(&tty->read_q.proc_list);
+	wake_up_interruptible(&tty->write_q.proc_list);
+	if (!tty->link)
+		return;
+	wake_up_interruptible(&tty->link->secondary.proc_list);
+	wake_up_interruptible(&tty->link->read_q.proc_list);
+	wake_up_interruptible(&tty->link->write_q.proc_list);
+	if (IS_A_PTY_MASTER(tty->line)) {
+		tty_hangup(tty->link);
+		flush_input(tty);
+		flush_output(tty);
 	}
 }
 
@@ -59,20 +51,25 @@ static inline void pty_copy(struct tty_struct * from, struct tty_struct * to)
 {
 	int c;
 
-	while (!from->stopped && !EMPTY(from->write_q)) {
-		if (FULL(to->read_q)) {
-			if (FULL(to->secondary))
-				break;
+	while (!from->stopped && !EMPTY(&from->write_q)) {
+		if (FULL(&to->read_q)) {
 			TTY_READ_FLUSH(to);
+			if (FULL(&to->read_q))
+				break;
 			continue;
 		}
-		c = GETCH(from->write_q);
-		PUTCH(c,to->read_q);
+		c = get_tty_queue(&from->write_q);
+		put_tty_queue(c, &to->read_q);
 		if (current->signal & ~current->blocked)
 			break;
 	}
 	TTY_READ_FLUSH(to);
-	wake_up(&from->write_q->proc_list);
+	if (!FULL(&from->write_q))
+		wake_up_interruptible(&from->write_q.proc_list);
+	if (from->write_data_cnt) {
+		set_bit(from->line, &tty_check_write);
+		mark_bh(TTY_BH);
+	}
 }
 
 /*
@@ -80,14 +77,28 @@ static inline void pty_copy(struct tty_struct * from, struct tty_struct * to)
  * the write_queue. It copies the input to the output-queue of it's
  * slave.
  */
-void mpty_write(struct tty_struct * tty)
+static void pty_write(struct tty_struct * tty)
 {
 	if (tty->link)
 		pty_copy(tty,tty->link);
 }
 
-void spty_write(struct tty_struct * tty)
+int pty_open(struct tty_struct *tty, struct file * filp)
 {
-	if (tty->link)
-		pty_copy(tty,tty->link);
+	if (!tty || !tty->link)
+		return -ENODEV;
+	if (IS_A_PTY_MASTER(tty->line))
+		clear_bit(TTY_SLAVE_OPENED, &tty->flags);
+	else
+		set_bit(TTY_SLAVE_OPENED, &tty->link->flags);
+	tty->write = tty->link->write = pty_write;
+	tty->close = tty->link->close = pty_close;
+	wake_up_interruptible(&tty->read_q.proc_list);
+	if (filp->f_flags & O_NDELAY)
+		return 0;
+	while (!tty->link->count && !(current->signal & ~current->blocked))
+		interruptible_sleep_on(&tty->link->read_q.proc_list);
+	if (!tty->link->count)
+		return -ERESTARTSYS;
+	return 0;
 }

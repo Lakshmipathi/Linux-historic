@@ -7,6 +7,12 @@
 #
 # Note 2! The CFLAGS definition is now in the main makefile...
 
+# only these two lines should need to be changed to remove inet sockets.
+# (and the inet/tcpip.o in net.o)
+
+DRIVERS     = drv
+SUBDIRS     := unix inet
+
 .c.o:
 	$(CC) $(CFLAGS) -c $<
 .s.o:
@@ -14,36 +20,33 @@
 .c.s:
 	$(CC) $(CFLAGS) -S $<
 
-OBJS	=  socket.o unix.o
+OBJS	=  Space.o ddi.o socket.o
 
-net.o: $(OBJS)
-	$(LD) -r -o net.o $(OBJS)
+all:		net.o
+
+net.o:		$(OBJS) subdirs
+		$(LD) -r -o net.o $(OBJS) $(DRIVERS)/$(DRIVERS).a network.a
+
+subdirs:	dummy
+		@rm -f network.a
+		@for i in $(DRIVERS); do (cd $$i && echo $$i && $(MAKE) $$i.a) || exit; done
+		@for i in $(SUBDIRS); do (cd $$i && echo $$i && $(MAKE) && ar rcs ../network.a $$i.o) || exit; done
+		@ranlib network.a
 
 clean:
-	rm -f core *.o *.a tmp_make
-	for i in *.c;do rm -f `basename $$i .c`.s;done
+		rm -f core *.o *.a *.s .depend
+		@for i in $(DRIVERS) $(SUBDIRS); do (cd $$i && echo $$i && $(MAKE) clean) || exit; done
 
 dep:
-	sed '/\#\#\# Dependencies/q' < Makefile > tmp_make
-	for i in *.c;do $(CPP) -M $$i;done >> tmp_make
-	cp tmp_make Makefile
+		$(CPP) -M *.c > .depend
+		@for i in $(DRIVERS) $(SUBDIRS); do (cd $$i && echo $$i && $(MAKE) dep) || exit; done
 
-### Dependencies:
-socket.o : socket.c /usr/src/linux/include/signal.h /usr/src/linux/include/sys/types.h \
-  /usr/src/linux/include/stddef.h /usr/src/linux/include/errno.h /usr/src/linux/include/linux/sched.h \
-  /usr/src/linux/include/linux/head.h /usr/src/linux/include/linux/fs.h /usr/src/linux/include/sys/dirent.h \
-  /usr/src/linux/include/limits.h /usr/src/linux/include/sys/vfs.h /usr/src/linux/include/linux/mm.h \
-  /usr/src/linux/include/linux/kernel.h /usr/src/linux/include/sys/param.h /usr/src/linux/include/sys/time.h \
-  /usr/src/linux/include/time.h /usr/src/linux/include/sys/resource.h /usr/src/linux/include/linux/stat.h \
-  /usr/src/linux/include/asm/system.h /usr/src/linux/include/asm/segment.h /usr/src/linux/include/sys/socket.h \
-  /usr/src/linux/include/linux/fcntl.h /usr/src/linux/include/termios.h kern_sock.h \
-  socketcall.h 
-unix.o : unix.c /usr/src/linux/include/signal.h /usr/src/linux/include/sys/types.h \
-  /usr/src/linux/include/stddef.h /usr/src/linux/include/errno.h /usr/src/linux/include/linux/string.h \
-  /usr/src/linux/include/linux/sched.h /usr/src/linux/include/linux/head.h /usr/src/linux/include/linux/fs.h \
-  /usr/src/linux/include/sys/dirent.h /usr/src/linux/include/limits.h /usr/src/linux/include/sys/vfs.h \
-  /usr/src/linux/include/linux/mm.h /usr/src/linux/include/linux/kernel.h /usr/src/linux/include/sys/param.h \
-  /usr/src/linux/include/sys/time.h /usr/src/linux/include/time.h /usr/src/linux/include/sys/resource.h \
-  /usr/src/linux/include/linux/stat.h /usr/src/linux/include/asm/system.h /usr/src/linux/include/asm/segment.h \
-  /usr/src/linux/include/sys/socket.h /usr/src/linux/include/sys/un.h /usr/src/linux/include/linux/fcntl.h \
-  /usr/src/linux/include/termios.h kern_sock.h 
+dummy:
+
+#
+# include a dependency file if one exists
+#
+ifeq (.depend,$(wildcard .depend))
+include .depend
+endif
+
