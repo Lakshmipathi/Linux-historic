@@ -149,7 +149,7 @@ static inline void __constant_memcpy_fromfs(void * to, const void * from, unsign
 			return;
 		case 3:
 			*(short *) to = get_user_word((const short *) from);
-			*(char *) to = get_user_byte(2+(const char *) from);
+			*((char *) to + 2) = get_user_byte(2+(const char *) from);
 			return;
 		case 4:
 			*(int *) to = get_user_long((const int *) from);
@@ -191,7 +191,7 @@ __asm__("cld\n\t" \
  __generic_memcpy_tofs((to),(from),(n)))
 
 /*
- * Someone who knows GNU asm better than I should double check the followig.
+ * Someone who knows GNU asm better than I should double check the following.
  * It seems to work, but I don't know if I'm doing something subtly wrong.
  * --- TYT, 11/24/91
  * [ nothing wrong here, Linus: I just changed the ax to be any reg ]

@@ -4,7 +4,7 @@
 	Copyright 1993 United States Government as represented by the Director,
 	National Security Agency.  This software may only be used and distributed
 	according to the terms of the GNU Public License as modified by SRC,
-	incorported herein by reference.
+	incorporated herein by reference.
 
 	The author may be reached as becker@super.org or
 	C/O Supercomputing Research Ctr., 17100 Science Dr., Bowie MD 20715
@@ -194,26 +194,27 @@ int register_netdev(struct device *dev)
 {
 	struct device *d = dev_base;
 	unsigned long flags;
-	int i;
+	int i=MAX_ETH_CARDS;
 
 	save_flags(flags);
 	cli();
 
 	if (dev && dev->init) {
-		if (dev->init(dev) != 0) {
-			restore_flags(flags);
-			return -EIO;
-		}
-
 		if (dev->name &&
 			((dev->name[0] == '\0') || (dev->name[0] == ' '))) {
 			for (i = 0; i < MAX_ETH_CARDS; ++i)
 				if (ethdev_index[i] == NULL) {
 					sprintf(dev->name, "eth%d", i);
-					printk("device '%s' loaded\n", dev->name);
+					printk("loading device '%s'...\n", dev->name);
 					ethdev_index[i] = dev;
 					break;
 				}
+		}
+
+		if (dev->init(dev) != 0) {
+		    if (i < MAX_ETH_CARDS) ethdev_index[i] = NULL;
+			restore_flags(flags);
+			return -EIO;
 		}
 
 		/* Add device to end of chain */

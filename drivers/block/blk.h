@@ -85,7 +85,6 @@ extern unsigned long mcd_init(unsigned long mem_start, unsigned long mem_end);
 #ifdef CONFIG_SBPCD
 extern unsigned long sbpcd_init(unsigned long, unsigned long);
 #endif CONFIG_SBPCD
-extern int is_read_only(int dev);
 extern void set_device_ro(int dev,int flag);
 
 extern void rd_load(void);
@@ -95,10 +94,10 @@ extern int ramdisk_size;
 extern unsigned long xd_init(unsigned long mem_start, unsigned long mem_end);
 
 #define RO_IOCTLS(dev,where) \
-  case BLKROSET: if (!suser()) return -EPERM; \
+  case BLKROSET: if (!suser()) return -EACCES; \
 		 set_device_ro((dev),get_fs_long((long *) (where))); return 0; \
   case BLKROGET: { int __err = verify_area(VERIFY_WRITE, (void *) (where), sizeof(long)); \
-		   if (!__err) put_fs_long(is_read_only(dev),(long *) (where)); return __err; }
+		   if (!__err) put_fs_long(0!=is_read_only(dev),(long *) (where)); return __err; }
 		 
 #ifdef MAJOR_NR
 
@@ -124,7 +123,7 @@ static void floppy_off(unsigned int nr);
 #define DEVICE_NAME "floppy"
 #define DEVICE_INTR do_floppy
 #define DEVICE_REQUEST do_fd_request
-#define DEVICE_NR(device) ((device) & 3)
+#define DEVICE_NR(device) ( ((device) & 3) | (((device) & 0x80 ) >> 5 ))
 #define DEVICE_ON(device) floppy_on(DEVICE_NR(device))
 #define DEVICE_OFF(device) floppy_off(DEVICE_NR(device))
 
@@ -287,7 +286,8 @@ static void end_request(int uptodate)
 	if ((bh = req->bh) != NULL) {
 		req->bh = bh->b_reqnext;
 		bh->b_reqnext = NULL;
-		bh->b_uptodate = uptodate;
+		bh->b_uptodate = uptodate;		
+		if (!uptodate) bh->b_req = 0; /* So no "Weird" errors */
 		unlock_buffer(bh);
 		if ((bh = req->bh) != NULL) {
 			req->current_nr_sectors = bh->b_size >> 9;

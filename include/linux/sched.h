@@ -1,8 +1,6 @@
 #ifndef _LINUX_SCHED_H
 #define _LINUX_SCHED_H
 
-#define NEW_SWAP
-
 /*
  * define DEBUG if you want the wait-queues to have some extra
  * debugging code. It's not normally used, but might catch some
@@ -14,14 +12,16 @@
 #define HZ 100
 
 /*
- * System setup flags..
+ * System setup and hardware bug flags..
  */
 extern int hard_math;
 extern int x86;
 extern int ignore_irq13;
-extern int wp_works_ok;
+extern int wp_works_ok;		/* doesn't work on a 386 */
+extern int hlt_works_ok;	/* problems on some 486Dx4's and old 386's */
 
 extern unsigned long intr_count;
+extern unsigned long event;
 
 #define start_bh_atomic() \
 __asm__ __volatile__("incl _intr_count")
@@ -222,13 +222,10 @@ struct mm_struct {
 	unsigned long rss;
 	unsigned long min_flt, maj_flt, cmin_flt, cmaj_flt;
 	int swappable:1;
-#ifdef NEW_SWAP
+	unsigned long swap_address;
 	unsigned long old_maj_flt;	/* old value of maj_flt */
 	unsigned long dec_flt;		/* page fault count of the last time */
 	unsigned long swap_cnt;		/* number of pages to swap on next pass */
-	short swap_table;		/* current page table */
-	short swap_page;		/* current page */
-#endif NEW_SWAP
 	struct vm_area_struct * mmap;
 };
 
@@ -240,7 +237,7 @@ struct mm_struct {
 		0, \
 /* ?_flt */	0, 0, 0, 0, \
 		0, \
-/* swap */	0, 0, 0, 0, 0, \
+/* swap */	0, 0, 0, 0, \
 		NULL }
 
 struct task_struct {
@@ -273,8 +270,8 @@ struct task_struct {
 	 */
 	struct task_struct *p_opptr, *p_pptr, *p_cptr, *p_ysptr, *p_osptr;
 	struct wait_queue *wait_chldexit;	/* for wait4() */
-	unsigned short uid,euid,suid;
-	unsigned short gid,egid,sgid;
+	unsigned short uid,euid,suid,fsuid;
+	unsigned short gid,egid,sgid,fsgid;
 	unsigned long timeout;
 	unsigned long it_real_value, it_prof_value, it_virt_value;
 	unsigned long it_real_incr, it_prof_incr, it_virt_incr;
@@ -289,7 +286,7 @@ struct task_struct {
 /* file system info */
 	int link_count;
 	struct tty_struct *tty; /* NULL if no tty */
-	struct inode * executable;
+/* shm stuff */
 	struct shm_desc *shm;
 	struct sem_undo *semun;
 /* ldt for this task - used by Wine.  If NULL, default_ldt is used */
@@ -335,7 +332,7 @@ struct task_struct {
 /* pid etc.. */	0,0,0,0, \
 /* suppl grps*/ {NOGROUP,}, \
 /* proc links*/ &init_task,&init_task,NULL,NULL,NULL,NULL, \
-/* uid etc */	0,0,0,0,0,0, \
+/* uid etc */	0,0,0,0,0,0,0,0, \
 /* timeout */	0,0,0,0,0,0,0,0,0,0,0,0, \
 /* rlimits */   { {LONG_MAX, LONG_MAX}, {LONG_MAX, LONG_MAX},  \
 		  {LONG_MAX, LONG_MAX}, {LONG_MAX, LONG_MAX},  \
@@ -343,7 +340,7 @@ struct task_struct {
 /* math */	0, \
 /* comm */	"swapper", \
 /* vm86_info */	NULL, 0, 0, 0, 0, \
-/* fs info */	0,NULL,NULL, \
+/* fs info */	0,NULL, \
 /* ipc */	NULL, NULL, \
 /* ldt */	NULL, \
 /* tss */	INIT_TSS, \
@@ -375,9 +372,8 @@ extern void notify_parent(struct task_struct * tsk);
 extern int send_sig(unsigned long sig,struct task_struct * p,int priv);
 extern int in_group_p(gid_t grp);
 
-extern int request_irq(unsigned int irq,void (*handler)(int));
+extern int request_irq(unsigned int irq,void (*handler)(int), unsigned long flags, const char *device);
 extern void free_irq(unsigned int irq);
-extern int irqaction(unsigned int irq,struct sigaction * sa);
 
 /*
  * Entry into gdt where to find first TSS. GDT layout:

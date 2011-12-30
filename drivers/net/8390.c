@@ -53,6 +53,11 @@ static char *version =
 
 #include "8390.h"
 
+#ifdef MODULE
+#include <linux/module.h>
+#include "../../tools/version.h"
+#endif
+
 /* These are the operational function interfaces to board-specific
    routines.
 	void reset_8390(struct device *dev)
@@ -85,22 +90,17 @@ int ei_debug = 1;
 static int high_water_mark = 0;
 
 /* Index to functions. */
-int ei_open(struct device *dev);	/* Put into the device structure. */
-void ei_interrupt(int reg_ptr);		/* Installed as the interrupt handler. */
-
 static void ei_tx_intr(struct device *dev);
 static void ei_receive(struct device *dev);
 static void ei_rx_overrun(struct device *dev);
 
 /* Routines generic to NS8390-based boards. */
-void NS8390_init(struct device *dev, int startp);
 static void NS8390_trigger_send(struct device *dev, unsigned int length,
 								int start_page);
 #ifdef HAVE_MULTICAST
 static void set_multicast_list(struct device *dev, int num_addrs, void *addrs);
 #endif
 
-struct sigaction ei_sigaction = { ei_interrupt, 0, 0, NULL, };
 
 /* Open/initialize the board.  This routine goes all-out, setting everything
    up anew at each open, even though many of these registers should only
@@ -288,7 +288,6 @@ void ei_interrupt(int reg_ptr)
 		if (interrupts & ENISR_TX) {
 			ei_tx_intr(dev);
 		} else if (interrupts & ENISR_COUNTERS) {
-			struct ei_device *ei_local = (struct ei_device *) dev->priv;
 			ei_local->stat.rx_frame_errors += inb_p(e8390_base + EN0_COUNTER0);
 			ei_local->stat.rx_crc_errors   += inb_p(e8390_base + EN0_COUNTER1);
 			ei_local->stat.rx_missed_errors+= inb_p(e8390_base + EN0_COUNTER2);
@@ -674,6 +673,19 @@ static void NS8390_trigger_send(struct device *dev, unsigned int length,
     return;
 }
 
+#ifdef MODULE
+char kernel_version[] = UTS_RELEASE;
+
+int init_module(void)
+{
+     return 0;
+}
+
+void
+cleanup_module(void)
+{
+}
+#endif /* MODULE */
 
 /*
  * Local variables:

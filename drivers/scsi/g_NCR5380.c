@@ -55,9 +55,6 @@
  * $Log: generic_NCR5380.c,v $
  */
 
-#include <linux/config.h>
-#if defined(CONFIG_SCSI_GENERIC_NCR5380)
-/* Standard option */
 #define AUTOPROBE_IRQ
 
 #include <asm/system.h>
@@ -107,9 +104,6 @@ void generic_NCR5380_setup(char *str, int *ints) {
 	}
 }
 
-static struct sigaction sa =  { generic_NCR5380_intr, 0, 
-    SA_INTERRUPT , NULL };
-
 /* 
  * Function : int generic_NCR5380_detect(Scsi_Host_Templace * tpnt)
  *
@@ -134,7 +128,7 @@ int generic_NCR5380_detect(Scsi_Host_Template * tpnt) {
 	instance = scsi_register (tpnt, sizeof(struct NCR5380_hostdata));
 	instance->io_port = overrides[current_override].port;
 
-	NCR5380_init(instance);
+	NCR5380_init(instance, 0);
 
 	if (overrides[current_override].irq != IRQ_AUTO)
 	    instance->irq = overrides[current_override].irq;
@@ -142,7 +136,7 @@ int generic_NCR5380_detect(Scsi_Host_Template * tpnt) {
 	    instance->irq = NCR5380_probe_irq(instance, 0xffff);
 
 	if (instance->irq != IRQ_NONE) 
-	    if (irqaction (instance->irq, &sa)) {
+	    if (request_irq(instance->irq, generic_NCR5380_intr, SA_INTERRUPT, "NCR5380")) {
 		printk("scsi%d : IRQ%d not free, interrupts disabled\n", 
 		    instance->host_no, instance->irq);
 		instance->irq = IRQ_NONE;
@@ -175,5 +169,3 @@ const char * generic_NCR5380_info (void) {
 }
 
 #include "NCR5380.c"
-
-#endif /* defined(CONFIG_SCSI_GENERIC_NCR5380) */

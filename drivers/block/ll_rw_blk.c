@@ -125,6 +125,7 @@ int is_read_only(int dev)
 
 	major = MAJOR(dev);
 	minor = MINOR(dev);
+	if ( major == FLOPPY_MAJOR && floppy_is_wp( minor) ) return 1;
 	if (major < 0 || major >= MAX_BLKDEV) return 0;
 	return ro_bits[major][minor >> 5] & (1 << (minor & 31));
 }
@@ -201,6 +202,7 @@ static void make_request(int major,int rw, struct buffer_head * bh)
 	if (blk_size[major])
 		if (blk_size[major][MINOR(bh->b_dev)] < (sector + count)>>1) {
 			bh->b_dirt = bh->b_uptodate = 0;
+			bh->b_req = 0;
 			return;
 		}
 	lock_buffer(bh);
@@ -225,6 +227,7 @@ repeat:
  * to add links to the top entry for scsi devices.
  */
 	if ((major == HD_MAJOR
+	     || major == FLOPPY_MAJOR
 	     || major == SCSI_DISK_MAJOR
 	     || major == SCSI_CDROM_MAJOR)
 	    && (req = blk_dev[major].current_request))
@@ -370,7 +373,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head * bh[])
 			correct_size = i;
 	}
 
-	/* Verify requested block sizees.  */
+	/* Verify requested block sizes.  */
 	for (i = 0; i < nr; i++) {
 		if (bh[i] && bh[i]->b_size != correct_size) {
 			printk(

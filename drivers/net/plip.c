@@ -232,7 +232,7 @@ plip_init(struct device *dev)
 
     dev->priv = kmalloc(sizeof (struct net_local), GFP_KERNEL);
     memset(dev->priv, 0, sizeof(struct net_local));
-    pl=dev->priv;
+    pl = (struct net_local *) dev->priv;
     
     pl->trigger_us	=	PLIP_TRIGGER_WAIT;
     pl->nibble_us	=	PLIP_NIBBLE_WAIT;
@@ -360,7 +360,7 @@ plip_open(struct device *dev)
     rcv->skb->len = dev->mtu;
     rcv->skb->dev = dev;
     cli();
-    if (request_irq(dev->irq , plip_interrupt) != 0) {
+    if (request_irq(dev->irq , plip_interrupt, 0, "plip") != 0) {
 	sti();
 	printk("%s: couldn't get IRQ %d.\n", dev->name, dev->irq);
 	return -EAGAIN;
@@ -433,7 +433,7 @@ plip_rebuild_header(void *buff, struct device *dev, unsigned long dst,
     int i;
 
     if (eth->h_proto != htons(ETH_P_IP)) {
-	printk("plip_rebuild_header: Don't know how to resolve type %d addreses?\n",(int)eth->h_proto);
+	printk("plip_rebuild_header: Don't know how to resolve type %d addresses?\n",(int)eth->h_proto);
 	memcpy(eth->h_source, dev->dev_addr, dev->addr_len);
 	return 0;
     }
@@ -693,7 +693,7 @@ static void
 plip_interrupt(int reg_ptr)
 {
     int irq = -(((struct pt_regs *)reg_ptr)->orig_eax+2);
-    struct device *dev = irq2dev_map[irq];
+    struct device *dev = (struct device *) irq2dev_map[irq];
     struct net_local *lp = (struct net_local *)dev->priv;
     struct plip_local *rcv = &lp->rcv_data;
     struct plip_local *snd = &lp->snd_data;
@@ -774,6 +774,7 @@ plip_send(struct device *dev, enum plip_nibble_state *ns_p, unsigned char data)
 		    break;
 		if (--cx == 0) /* time out */
 		    return 1;
+		udelay(PLIP_DELAY_UNIT);
 	    }
 	    outb(0x10 | (data >> 4), PAR_DATA(dev));
 	    *ns_p = PLIP_NST_2;
@@ -788,6 +789,7 @@ plip_send(struct device *dev, enum plip_nibble_state *ns_p, unsigned char data)
 		    break;
 		if (--cx == 0) /* time out */
 		    return 1;
+		udelay(PLIP_DELAY_UNIT);
 	    }
 	    return 0;
 

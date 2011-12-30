@@ -22,6 +22,7 @@
  *		Alan Cox	:	Added NULL's for socket options.
  *		Alan Cox	:	Re-commented the code.
  *		Alan Cox	:	Use new kernel side addressing
+ *		Rob Janssen	:	Correct MTU usage.
  *
  *
  *		This program is free software; you can redistribute it and/or
@@ -68,7 +69,7 @@ int packet_rcv(struct sk_buff *skb, struct device *dev,  struct packet_type *pt)
 	struct sock *sk;
 	
 	/*
-	 *	When we registered the protcol we saved the socket in the data
+	 *	When we registered the protocol we saved the socket in the data
 	 *	field for just this event.
 	 */
 
@@ -86,7 +87,7 @@ int packet_rcv(struct sk_buff *skb, struct device *dev,  struct packet_type *pt)
 	skb->sk = sk;
 
 	/*
-	 *	Charge the memory to the socket. This is done specificially
+	 *	Charge the memory to the socket. This is done specifically
 	 *	to prevent sockets using all the memory up.
 	 */
 	 
@@ -162,7 +163,7 @@ static int packet_sendto(struct sock *sk, unsigned char *from, int len,
 	 *	raw protocol and you must do your own fragmentation at this level.
 	 */
 	 
-	if(len>dev->mtu)
+	if(len>dev->mtu+dev->hard_header_len)
   		return -EMSGSIZE;
 
 	skb = sk->prot->wmalloc(sk, len, 0, GFP_KERNEL);
@@ -259,7 +260,7 @@ static int packet_init(struct sock *sk)
 
 /*
  *	Pull a packet from our receive queue and hand it to the user.
- *	If neccessary we block.
+ *	If necessary we block.
  */
  
 int packet_recvfrom(struct sock *sk, unsigned char *to, int len,

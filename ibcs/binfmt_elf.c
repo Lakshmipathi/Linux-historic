@@ -66,12 +66,13 @@ unsigned long * create_elf_tables(char * p,int argc,int envc,struct elfhdr * exe
 		mpnt->vm_start = PAGE_MASK & (unsigned long) p;
 		mpnt->vm_end = TASK_SIZE;
 		mpnt->vm_page_prot = PAGE_PRIVATE|PAGE_DIRTY;
+		mpnt->vm_flags = VM_STACK_FLAGS;
 		mpnt->vm_share = NULL;
+		mpnt->vm_ops = NULL;
 		mpnt->vm_inode = NULL;
 		mpnt->vm_offset = 0;
-		mpnt->vm_ops = NULL;
+		mpnt->vm_pte = 0;
 		insert_vm_struct(current, mpnt);
-		current->mm->stk_vma = mpnt;
 	}
 	sp = (unsigned long *) (0xfffffffc & (unsigned long) p);
 	if(exec) sp -= DLINFO_ITEMS*2;
@@ -120,7 +121,7 @@ unsigned long * create_elf_tables(char * p,int argc,int envc,struct elfhdr * exe
 
 
 /* This is much more generalized than the library routine read function,
-   so we keep this separate.  Techincally the library read function
+   so we keep this separate.  Technically the library read function
    is only provided so that we can read a.out libraries that have
    an ELF header */
 

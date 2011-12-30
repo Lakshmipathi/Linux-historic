@@ -389,7 +389,7 @@ static struct vm_operations_struct shm_vm_ops = {
 
 /*
  * This is really minimal support to make the shared mem stuff
- * ve known by the general VM manager. It should add the vm_ops
+ * be known by the general VM manager. It should add the vm_ops
  * field so that 'munmap()' and friends work correctly on shared
  * memory areas..
  */
@@ -404,17 +404,19 @@ static int add_vm_area(unsigned long addr, unsigned long len, int readonly)
 	vma->vm_task = current;
 	vma->vm_start = addr;
 	vma->vm_end = addr + len;
+	vma->vm_flags = VM_SHM | VM_MAYREAD | VM_MAYEXEC | VM_READ | VM_EXEC;
 	if (readonly)
 		vma->vm_page_prot = PAGE_READONLY;
-	else
+	else {
+		vma->vm_flags |= VM_MAYWRITE | VM_WRITE;
 		vma->vm_page_prot = PAGE_SHARED;
-	vma->vm_flags = VM_SHM;
+	}
 	vma->vm_share = NULL;
 	vma->vm_inode = NULL;
 	vma->vm_offset = 0;
 	vma->vm_ops = &shm_vm_ops;
 	insert_vm_struct(current, vma);
-	merge_segments(current->mm->mmap, NULL, NULL);
+	merge_segments(current->mm->mmap);
 	return 0;
 }
 
@@ -497,11 +499,6 @@ int sys_shmat (int shmid, char *shmaddr, int shmflg, ulong *raddr)
 	}
 
 	shp->shm_nattch++;            /* prevent destruction */
-	if (addr < current->mm->end_data) {
-		iput (current->executable);
-		current->executable = NULL;
-/*		current->end_data = current->end_code = 0; */
-	}
 
 	if ((err = shm_map (shmd, shmflg & SHM_REMAP))) {
 		if (--shp->shm_nattch <= 0 && shp->shm_perm.mode & SHM_DEST)
@@ -639,7 +636,7 @@ static unsigned long shm_swap_in(struct vm_area_struct * vma, unsigned long code
 
 	id = (code >> SHM_ID_SHIFT) & SHM_ID_MASK;
 	if (id > max_shmid) {
-		printk ("shm_no_page: id=%d too big. proc mem corruptedn", id);
+		printk ("shm_no_page: id=%d too big. proc mem corrupted\n", id);
 		return BAD_PAGE | PAGE_SHARED;
 	}
 	shp = shm_segs[id];

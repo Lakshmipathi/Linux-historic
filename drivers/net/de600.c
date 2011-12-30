@@ -1,5 +1,5 @@
 static char *version =
-	"de600.c: $Revision: 1.39 $,  Bjorn Ekwall (bj0rn@blox.se)\n";
+	"de600.c: $Revision: 1.40 $,  Bjorn Ekwall (bj0rn@blox.se)\n";
 /*
  *	de600.c
  *
@@ -76,8 +76,10 @@ static char *version =
  * Tricks TCP to announce a small max window (max 2 fast packets please :-)
  *
  * Comment away at your own risk!
+ *
+ * Update: Use the more general per-device maxwindow parameter instead.
  */
-#define FAKE_SMALL_MAX
+#undef FAKE_SMALL_MAX
 
 /* use 0 for production, 1 for verification, >2 for debug */
 #ifdef DE600_DEBUG
@@ -106,8 +108,10 @@ unsigned int de600_debug = DE600_DEBUG;
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 
+#ifdef MODULE
 #include <linux/module.h>
 #include "../../tools/version.h"
+#endif
 
 #ifdef FAKE_SMALL_MAX
 static unsigned long de600_rspace(struct sock *sk);
@@ -190,9 +194,9 @@ typedef unsigned char byte;
 /*
  * command register, accessed through DATA_PORT with low bits = COMMAND
  */
-#define RX_ALL		0x01 /* PROMISCIOUS */
-#define RX_BP		0x02 /* default: BROADCAST & PHYSICAL ADRESS */
-#define RX_MBP		0x03 /* MULTICAST, BROADCAST & PHYSICAL ADRESS */
+#define RX_ALL		0x01 /* PROMISCUOUS */
+#define RX_BP		0x02 /* default: BROADCAST & PHYSICAL ADDRESS */
+#define RX_MBP		0x03 /* MULTICAST, BROADCAST & PHYSICAL ADDRESS */
 
 #define TX_ENABLE	0x04 /* bit 2 */
 #define RX_ENABLE	0x08 /* bit 3 */
@@ -336,7 +340,7 @@ de600_read_byte(unsigned char type, struct device *dev) { /* dev used by macros 
 static int
 de600_open(struct device *dev)
 {
-	if (request_irq(DE600_IRQ, de600_interrupt)) {
+	if (request_irq(DE600_IRQ, de600_interrupt, 0, "de600")) {
 		printk ("%s: unable to get IRQ %d\n", dev->name, DE600_IRQ);
 		return 1;
 	}
@@ -791,7 +795,7 @@ adapter_init(struct device *dev)
  * Note that the returned window info will never be smaller than
  * DE600_MIN_WINDOW, i.e. 1024
  * This differs from the standard function, that can return an
- * arbitraily small window!
+ * arbitrarily small window!
  */
 #define min(a,b)	((a)<(b)?(a):(b))
 static unsigned long

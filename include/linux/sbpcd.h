@@ -20,7 +20,7 @@
  * and specify the type of your interface in SBPRO.
  *
  * SBPRO addresses typically are 0x0230 (=0x220+0x10), 0x0250, ...
- * LASERMATE (CI-101P, WDH-7001C) adresses typically are 0x0300, 0x0310, ...
+ * LASERMATE (CI-101P, WDH-7001C) addresses typically are 0x0300, 0x0310, ...
  * SPEA addresses are 0x320, 0x330, 0x340, 0x350
  * there are some soundcards on the market with 0x0630, 0x0650, ...
  *
@@ -45,6 +45,16 @@
 #define CDROM_PORT 0x0230
 #define SBPRO     1
 #endif
+
+/*
+ * If you have a "compatible" soundcard of type "SBPRO 0" or "SBPRO 2",
+ * enter your sound card's base address here if you want sbpcd to turn
+ * the CD sound channels on.
+ *
+ * Example: #define SOUND_BASE 0x220 enables the sound card's CD channels
+ *          #define SOUND_BASE 0     leaves the soundcard untouched
+ */
+#define SOUND_BASE 0
 
 /* ignore the rest if you have only one interface board & driver */
 
@@ -419,14 +429,14 @@ Read XA Parameter:
  */
 #define OUT(x,y) outb(y,x)
 
-
-#define MIXER_CD_Volume	0x28
-
-/*==========================================================================*/
 /*
  * use "REP INSB" for strobing the data in:
  */
 #define READ_DATA(port, buf, nr) insb(port, buf, nr)
+
+/*==========================================================================*/
+
+#define MIXER_CD_Volume	0x28 /* internal SB Pro register address */
 
 /*==========================================================================*/
 /*

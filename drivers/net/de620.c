@@ -1,5 +1,5 @@
 /*
- *	de620.c $Revision: 1.30 $ BETA
+ *	de620.c $Revision: 1.31 $ BETA
  *
  *
  *	Linux driver for the D-Link DE-620 Ethernet pocket adapter.
@@ -39,7 +39,7 @@
  *
  *****************************************************************************/
 static char *version =
-	"de620.c: $Revision: 1.30 $,  Bjorn Ekwall <bj0rn@blox.se>\n";
+	"de620.c: $Revision: 1.31 $,  Bjorn Ekwall <bj0rn@blox.se>\n";
 
 /***********************************************************************
  *
@@ -119,8 +119,10 @@ static char *version =
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 
+#ifdef MODULE
 #include <linux/module.h>
 #include "../../tools/version.h"
+#endif
 
 /* Constant definitions for the DE-620 registers, commands and bits */
 #include "de620.h"
@@ -399,7 +401,7 @@ de620_get_register(byte reg)
 static int
 de620_open(struct device *dev)
 {
-	if (request_irq(DE620_IRQ, de620_interrupt)) {
+	if (request_irq(DE620_IRQ, de620_interrupt, 0, "de620")) {
 		printk ("%s: unable to get IRQ %d\n", dev->name, DE620_IRQ);
 		return 1;
 	}
@@ -915,7 +917,7 @@ read_eeprom(void)
 {
 	unsigned short wrd;
 
-	/* D-Link Ethernet adresses are in the series  00:80:c8:7X:XX:XX:XX */
+	/* D-Link Ethernet addresses are in the series  00:80:c8:7X:XX:XX:XX */
 	wrd = ReadAWord(0x1aa);	/* bytes 0 + 1 of NodeID */
 	if (wrd != htons(0x0080)) /* Valid D-Link ether sequence? */
 		return -1; /* Nope, not a DE-620 */

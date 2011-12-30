@@ -85,6 +85,30 @@ static void pty_close(struct tty_struct * tty, struct file * filp)
 	}
 }
 
+/*
+ * The unthrottle routine is called by the line discipline to signal
+ * that it can receive more characters.  For PTY's, the TTY_THROTTLED
+ * flag is always set, to force the line discipline to always call the
+ * unthrottle routine when there are fewer than TTY_THRESHOLD_UNTHROTTLE 
+ * characters in the queue.  This is necessary since each time this
+ * happens, we need to wake up any sleeping processes that could be
+ * (1) trying to send data to the pty, or (2) waiting in wait_until_sent()
+ * for the pty buffer to be drained.
+ */
+static void pty_unthrottle(struct tty_struct * tty)
+{
+	struct tty_struct *o_tty = tty->link;
+
+	if (!o_tty)
+		return;
+
+	if ((o_tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
+	    o_tty->ldisc.write_wakeup)
+		(o_tty->ldisc.write_wakeup)(o_tty);
+	wake_up_interruptible(&o_tty->write_wait);
+	set_bit(TTY_THROTTLED, &tty->flags);
+}
+
 static int pty_write(struct tty_struct * tty, int from_user,
 		       unsigned char *buf, int count)
 {
@@ -177,6 +201,7 @@ int pty_open(struct tty_struct *tty, struct file * filp)
 	if (tty->driver.subtype == PTY_TYPE_SLAVE)
 		clear_bit(TTY_SLAVE_CLOSED, &tty->link->flags);
 	wake_up_interruptible(&pty->open_wait);
+	set_bit(TTY_THROTTLED, &tty->flags);
 	if (filp->f_flags & O_NDELAY)
 		return 0;
 	while (!tty->link->count && !(current->signal & ~current->blocked))
@@ -200,7 +225,7 @@ long pty_init(long kmem_start)
 	pty_driver.init_termios = tty_std_termios;
 	pty_driver.init_termios.c_iflag = 0;
 	pty_driver.init_termios.c_oflag = 0;
-	pty_driver.init_termios.c_cflag = B9600 | CS8 | CREAD;
+	pty_driver.init_termios.c_cflag = B38400 | CS8 | CREAD;
 	pty_driver.init_termios.c_lflag = 0;
 	pty_driver.flags = TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_REAL_RAW;
 	pty_driver.refcount = &pty_refcount;
@@ -215,12 +240,14 @@ long pty_init(long kmem_start)
 	pty_driver.write_room = pty_write_room;
 	pty_driver.flush_buffer = pty_flush_buffer;
 	pty_driver.chars_in_buffer = pty_chars_in_buffer;
+	pty_driver.unthrottle = pty_unthrottle;
 
 	pty_slave_driver = pty_driver;
 	pty_slave_driver.name = "ttyp";
 	pty_slave_driver.subtype = PTY_TYPE_SLAVE;
 	pty_slave_driver.minor_start = 192;
 	pty_slave_driver.init_termios = tty_std_termios;
+	pty_slave_driver.init_termios.c_cflag = B38400 | CS8 | CREAD;
 	pty_slave_driver.table = ttyp_table;
 	pty_slave_driver.termios = ttyp_termios;
 	pty_slave_driver.termios_locked = ttyp_termios_locked;

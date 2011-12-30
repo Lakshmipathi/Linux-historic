@@ -358,7 +358,7 @@ static int lock_it(struct file *filp, struct file_lock *caller, unsigned int fd)
 			/*
 			 * Replace the old lock with the new one. Wake up
 			 * anybody waiting for the old one, as the change in
-			 * lock type migth satisfy his needs.
+			 * lock type might satisfy his needs.
 			 */
 			wake_up(&fl->fl_wait);
 			fl->fl_start = caller->fl_start;
@@ -375,8 +375,22 @@ next_lock:
 	}
 
 	if (! added) {
-		if (caller->fl_type == F_UNLCK)
+		if (caller->fl_type == F_UNLCK) {
+/*
+ * XXX - under iBCS-2, attempting to unlock a not-locked region is 
+ * 	not considered an error condition, although I'm not sure if this 
+ * 	should be a default behavior (it makes porting to native Linux easy)
+ * 	or a personality option.
+ *
+ *	Does Xopen/1170 say anything about this?
+ *	- drew@Colorado.EDU
+ */
+#if 0
+			return -EINVAL;
+#else
 			return 0;
+#endif
+		}
 		if (! (caller = alloc_lock(before, caller, fd)))
 			return -ENOLCK;
 	}

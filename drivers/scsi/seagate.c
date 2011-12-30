@@ -46,9 +46,7 @@
  *	transfer rate if handshaking isn't working correctly.
  */
 
-#include <linux/config.h>
 
-#if defined(CONFIG_SCSI_SEAGATE) || defined(CONFIG_SCSI_FD_8xx) 
 #include <asm/io.h>
 #include <asm/system.h>
 #include <linux/signal.h>
@@ -278,12 +276,6 @@ int seagate_st0x_detect (Scsi_Host_Template * tpnt)
 #ifndef OVERRIDE
 	int i,j;
 #endif 
-static struct sigaction seagate_sigaction = {
-	&seagate_reconnect_intr,
-	0,
-	SA_INTERRUPT,
-	NULL
-};
 
 /*
  *	First, we try for the manual override.
@@ -352,7 +344,7 @@ static struct sigaction seagate_sigaction = {
  */
 		instance = scsi_register(tpnt, 0);
 		hostno = instance->host_no;
-		if (irqaction((int) irq, &seagate_sigaction)) {
+		if (request_irq((int) irq, seagate_reconnect_intr, SA_INTERRUPT, "seagate")) {
 			printk("scsi%d : unable to allocate IRQ%d\n",
 				hostno, (int) irq);
 			return 0;
@@ -672,18 +664,20 @@ static int internal_command(unsigned char target, unsigned char lun, const void 
  *	target ID are asserted.  A valid initator ID is not on the bus
  *	until IO is asserted, so we must wait for that.
  */
-		
-		for (clock = jiffies + 10, temp = 0; (jiffies < clock) &&
-		     !(STATUS & STAT_IO););
-		
-		if (jiffies >= clock)
-			{
+		clock = jiffies + 10;
+		for (;;) {
+			temp = STATUS;
+			if ((temp & STAT_IO) && !(temp & STAT_BSY))
+				break;
+
+			if (jiffies > clock) {
 #if (DEBUG & PHASE_RESELECT)
-			printk("scsi%d : RESELECT timed out while waiting for IO .\n",
-				hostno);
+				printk("scsi%d : RESELECT timed out while waiting for IO .\n",
+					hostno);
 #endif
-			return (DID_BAD_INTR << 16);
+				return (DID_BAD_INTR << 16);
 			}
+		}
 
 /* 
  * 	After I/O is asserted by the target, we can read our ID and its
@@ -1589,7 +1583,7 @@ int seagate_st0x_reset (Scsi_Cmnd * SCpnt)
 #ifdef DEBUG
 	printk("SCSI bus reset.\n");
 #endif
-	return SCSI_RESET_PENDING;
+	return SCSI_RESET_WAKEUP;
 	}
 
 #include <asm/segment.h>
@@ -1697,5 +1691,3 @@ printk("scsi%d : heads = %d cylinders = %d sectors = %d total = %d formatted = %
     
   return result;
 }
-#endif	/* defined(CONFIG_SCSI_SEGATE) */
-

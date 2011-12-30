@@ -629,6 +629,27 @@ static void csi_K(int currcons, int vpar)
 	need_wrap = 0;
 }
 
+static void csi_X(int currcons, int vpar)
+{
+	long count;
+	long start;
+
+	if (!vpar)
+	        vpar++;
+
+	start=pos;
+	count=(vpar > video_num_columns-x) ? (video_num_columns-x) : vpar;
+
+	__asm__("cld\n\t"
+		"rep\n\t"
+		"stosw\n\t"
+		: /* no output */
+		:"c" (count),
+		"D" (start),"a" (video_erase_char)
+		:"cx","di");
+	need_wrap = 0;
+}
+
 /*
  *  I hope this works. The monochrome part is untested.
  */
@@ -780,6 +801,7 @@ static void cursor_report(int currcons, struct tty_struct * tty)
 	respond_string(buf, tty);
 }
 
+#ifdef CONFIG_SELECTION
 static void mouse_report(int currcons, struct tty_struct * tty,
 			 int butt, int mrx, int mry)
 {
@@ -789,6 +811,7 @@ static void mouse_report(int currcons, struct tty_struct * tty,
 		(char)('!' + mry));
 	respond_string(buf, tty);
 }
+#endif
 
 static inline void status_report(int currcons, struct tty_struct * tty)
 {
@@ -1080,7 +1103,7 @@ static int con_write(struct tty_struct * tty, int from_user,
 {
 	int c, n = 0;
 	unsigned int currcons;
-	struct vt_struct *vt = tty->driver_data;
+	struct vt_struct *vt = (struct vt_struct *)tty->driver_data;
 
 	currcons = vt->vc_num;
 	if (currcons >= NR_CONSOLES) {
@@ -1347,6 +1370,9 @@ static int con_write(struct tty_struct * tty, int from_user,
 					case 'u':
 						restore_cur(currcons);
 						continue;
+					case 'X':
+						csi_X(currcons, par[0]);
+						continue;
 					case '@':
 						csi_at(currcons,par[0]);
 						continue;
@@ -1497,9 +1523,9 @@ static void con_unthrottle(struct tty_struct *tty)
 /*
  *  long con_init(long);
  *
- * This routine initalizes console interrupts, and does nothing
+ * This routine initializes console interrupts, and does nothing
  * else. If you want the screen to clear, call tty_write with
- * the appropriate escape-sequece.
+ * the appropriate escape-sequence.
  *
  * Reads the information preserved by setup.s to determine the current display
  * type and sets everything accordingly.
@@ -1808,7 +1834,7 @@ static void highlight(const int currcons, const int s, const int e)
 static void highlight_pointer(const int currcons, const int where)
 {
         unsigned char *p;
-	static char *prev=NULL;
+	static unsigned char *prev=NULL;
 
 	if (where==-1) /* remove the pointer */
 	{
@@ -1841,7 +1867,7 @@ static inline int inword(const char c) {
    return ( inwordLut[(c>>5)&3] >> (c&0x1F) ) & 1;
 }
 
-/* set inwordLut conntents. Invoked by ioctl(). */
+/* set inwordLut contents. Invoked by ioctl(). */
 int sel_loadlut(const int arg)
 {
     memcpy_fromfs(inwordLut,(unsigned long *)(arg+4),16);
@@ -2129,7 +2155,7 @@ static int set_get_font(char * arg, int set)
 			put_fs_byte(*(charmap+i), arg+i);
 
 	cli();
-	outb_p( 0x00, seq_port_reg );   /* Frist, the sequencer */
+	outb_p( 0x00, seq_port_reg );   /* First, the sequencer */
 	outb_p( 0x01, seq_port_val );   /* Synchronous reset */
 	outb_p( 0x02, seq_port_reg );
 	outb_p( 0x03, seq_port_val );   /* CPU writes to maps 0 and 1 */

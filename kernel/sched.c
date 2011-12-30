@@ -62,6 +62,7 @@ long time_adjust = 0;
 long time_adjust_step = 0;
 
 int need_resched = 0;
+unsigned long event = 0;
 
 /*
  * Tell us the machine setup..
@@ -70,6 +71,7 @@ int hard_math = 0;		/* set by boot/head.S */
 int x86 = 0;			/* set by boot/head.S to 3 or 4 */
 int ignore_irq13 = 0;		/* set if exception 16 works */
 int wp_works_ok = 0;		/* set if paging hardware honours WP */ 
+int hlt_works_ok = 1;		/* set if the "hlt" instruction works */
 
 /*
  * Bus types ..
@@ -159,7 +161,7 @@ unsigned long itimer_next = ~0;
  * information in task[0] is never used.
  *
  * The "confuse_gcc" goto is used only to get better assembly code..
- * Djikstra probably hates me.
+ * Dijkstra probably hates me.
  */
 asmlinkage void schedule(void)
 {
@@ -278,7 +280,7 @@ void wake_up(struct wait_queue **q)
 			if ((p->state == TASK_UNINTERRUPTIBLE) ||
 			    (p->state == TASK_INTERRUPTIBLE)) {
 				p->state = TASK_RUNNING;
-				if (p->counter > current->counter)
+				if (p->counter > current->counter + 3)
 					need_resched = 1;
 			}
 		}
@@ -304,7 +306,7 @@ void wake_up_interruptible(struct wait_queue **q)
 		if ((p = tmp->task) != NULL) {
 			if (p->state == TASK_INTERRUPTIBLE) {
 				p->state = TASK_RUNNING;
-				if (p->counter > current->counter)
+				if (p->counter > current->counter + 3)
 					need_resched = 1;
 			}
 		}
@@ -826,6 +828,6 @@ void sched_init(void)
 	outb_p(0x34,0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	outb(LATCH >> 8 , 0x40);	/* MSB */
-	if (request_irq(TIMER_IRQ,(void (*)(int)) do_timer)!=0)
+	if (request_irq(TIMER_IRQ,(void (*)(int)) do_timer, 0, "timer") != 0)
 		panic("Could not allocate timer IRQ!");
 }

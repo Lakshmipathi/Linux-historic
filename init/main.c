@@ -68,17 +68,18 @@ static char printbuf[1024];
 extern int console_loglevel;
 
 extern char empty_zero_page[PAGE_SIZE];
-extern int vsprintf(char *,const char *,va_list);
 extern void init(void);
 extern void init_IRQ(void);
 extern void init_modules(void);
-extern long kmalloc_init (long,long);
+extern long console_init(long, long);
+extern long kmalloc_init(long,long);
 extern long blk_dev_init(long,long);
 extern long chr_dev_init(long,long);
 extern void floppy_init(void);
 extern void sock_init(void);
 extern long rd_init(long mem_start, int length);
 unsigned long net_dev_init(unsigned long, unsigned long);
+extern long bios32_init(long, long);
 
 extern void hd_setup(char *str, int *ints);
 extern void bmouse_setup(char *str, int *ints);
@@ -89,6 +90,7 @@ extern void st_setup(char *str, int *ints);
 extern void st0x_setup(char *str, int *ints);
 extern void tmc8xx_setup(char *str, int *ints);
 extern void t128_setup(char *str, int *ints);
+extern void pas16_setup(char *str, int *ints);
 extern void generic_NCR5380_setup(char *str, int *intr);
 extern void aha152x_setup(char *str, int *ints);
 extern void scsi_luns_setup(char *str, int *ints);
@@ -96,6 +98,7 @@ extern void sound_setup(char *str, int *ints);
 #ifdef CONFIG_SBPCD
 extern void sbpcd_setup(char *str, int *ints);
 #endif CONFIG_SBPCD
+void ramdisk_setup(char *str, int *ints);
 
 #ifdef CONFIG_SYSVIPC
 extern void ipc_init(void);
@@ -173,6 +176,7 @@ struct {
 	void (*setup_func)(char *, int *);
 } bootsetups[] = {
 	{ "reserve=", reserve_setup },
+	{ "ramdisk=", ramdisk_setup },
 #ifdef CONFIG_INET
 	{ "ether=", eth_setup },
 #endif
@@ -195,6 +199,9 @@ struct {
 #ifdef CONFIG_SCSI_T128
 	{ "t128=", t128_setup },
 #endif
+#ifdef CONFIG_SCSI_PAS16
+	{ "pas16=", pas16_setup },
+#endif
 #ifdef CONFIG_SCSI_GENERIC_NCR5380
 	{ "ncr5380=", generic_NCR5380_setup },
 #endif
@@ -216,7 +223,13 @@ struct {
 	{ 0, 0 }
 };
 
-int checksetup(char *line)
+void ramdisk_setup(char *str, int *ints)
+{
+   if (ints[0] > 0 && ints[1] >= 0)
+      ramdisk_size = ints[1];
+}
+
+static int checksetup(char *line)
 {
 	int i = 0;
 	int ints[11];
@@ -225,11 +238,11 @@ int checksetup(char *line)
 		int n = strlen(bootsetups[i].str);
 		if (!strncmp(line,bootsetups[i].str,n)) {
 			bootsetups[i].setup_func(get_options(line+n,ints), ints);
-			return(0);
+			return 1;
 		}
 		i++;
 	}
-	return(1);
+	return 0;
 }
 
 unsigned long loops_per_sec = 1;
@@ -304,19 +317,33 @@ static void parse_options(char *line)
 					break;
 				}
 			}
-		} else if (!strcmp(line,"ro"))
+			continue;
+		}
+		if (!strcmp(line,"ro")) {
 			root_mountflags |= MS_RDONLY;
-		else if (!strcmp(line,"rw"))
+			continue;
+		}
+		if (!strcmp(line,"rw")) {
 			root_mountflags &= ~MS_RDONLY;
-		else if (!strcmp(line,"debug"))
+			continue;
+		}
+		if (!strcmp(line,"debug")) {
 			console_loglevel = 10;
-		else if (!strcmp(line,"no387")) {
+			continue;
+		}
+		if (!strcmp(line,"no-hlt")) {
+			hlt_works_ok = 0;
+			continue;
+		}
+		if (!strcmp(line,"no387")) {
 			hard_math = 0;
 			__asm__("movl %%cr0,%%eax\n\t"
 				"orl $0xE,%%eax\n\t"
 				"movl %%eax,%%cr0\n\t" : : : "ax");
-		} else
-			checksetup(line);
+			continue;
+		}
+		if (checksetup(line))
+			continue;
 		/*
 		 * Then check if it's an environment variable or
 		 * an option.
@@ -407,6 +434,8 @@ asmlinkage void start_kernel(void)
 	prof_len >>= 2;
 	memory_start += prof_len * sizeof(unsigned long);
 #endif
+	memory_start = console_init(memory_start,memory_end);
+	memory_start = bios32_init(memory_start,memory_end);
 	memory_start = kmalloc_init(memory_start,memory_end);
 	memory_start = chr_dev_init(memory_start,memory_end);
 	memory_start = blk_dev_init(memory_start,memory_end);
@@ -420,6 +449,7 @@ asmlinkage void start_kernel(void)
 #endif
 	memory_start = inode_init(memory_start,memory_end);
 	memory_start = file_table_init(memory_start,memory_end);
+	memory_start = name_cache_init(memory_start,memory_end);
 	mem_init(low_memory_start,memory_start,memory_end);
 	buffer_init();
 	time_init();
@@ -463,6 +493,11 @@ asmlinkage void start_kernel(void)
 		for (;;) ;
 	}
 #endif
+	if (hlt_works_ok) {
+		printk("Checking 'hlt' instruction... ");
+		__asm__ __volatile__("hlt ; hlt ; hlt ; hlt");
+		printk(" Ok.\n");
+	}
 
 	system_utsname.machine[1] = '0' + x86;
 	printk(linux_banner);

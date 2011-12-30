@@ -45,6 +45,7 @@
 extern void buffer_init(void);
 extern unsigned long inode_init(unsigned long start, unsigned long end);
 extern unsigned long file_table_init(unsigned long start, unsigned long end);
+extern unsigned long name_cache_init(unsigned long start, unsigned long end);
 
 #define MAJOR(a) (int)((unsigned short)(a) >> 8)
 #define MINOR(a) (int)((unsigned short)(a) & 0xFF)
@@ -84,7 +85,7 @@ extern unsigned long file_table_init(unsigned long start, unsigned long end);
 /*
  * Note that read-only etc flags are inode-specific: setting some file-system
  * flags just means all the inodes inherit those flags by default. It might be
- * possible to overrride it sevelctively if you really wanted to with some
+ * possible to override it selectively if you really wanted to with some
  * ioctl() that is not currently implemented.
  *
  * Exception: MS_RDONLY is always applied to the entire file system.
@@ -104,12 +105,13 @@ extern unsigned long file_table_init(unsigned long start, unsigned long end);
 #define BLKGETSIZE 4704 /* return device size */
 #define BLKFLSBUF 4705 /* flush buffer cache */
 #define BLKRASET 4706 /* Set read ahead for block device */
+#define BLKRAGET 4707 /* get current read ahead setting */
 
 /* These are a few other constants  only used by scsi  devices */
 
 #define SCSI_IOCTL_GET_IDLUN 0x5382
 
-/* Used to turn on and off tagged queueing for scsi devices */
+/* Used to turn on and off tagged queuing for scsi devices */
 
 #define SCSI_IOCTL_TAGGED_ENABLE 0x5383
 #define SCSI_IOCTL_TAGGED_DISABLE 0x5384
@@ -292,7 +294,7 @@ struct file_operations {
 	int (*readdir) (struct inode *, struct file *, struct dirent *, int);
 	int (*select) (struct inode *, struct file *, int, select_table *);
 	int (*ioctl) (struct inode *, struct file *, unsigned int, unsigned long);
-	int (*mmap) (struct inode *, struct file *, unsigned long, size_t, int, unsigned long);
+	int (*mmap) (struct inode *, struct file *, struct vm_area_struct *);
 	int (*open) (struct inode *, struct file *);
 	void (*release) (struct inode *, struct file *);
 	int (*fsync) (struct inode *, struct file *);
@@ -420,6 +422,7 @@ extern inline void mark_buffer_dirty(struct buffer_head * bh, int flag)
 extern int check_disk_change(dev_t dev);
 extern void invalidate_inodes(dev_t dev);
 extern void invalidate_buffers(dev_t dev);
+extern int floppy_is_wp(int minor);
 extern void sync_inodes(dev_t dev);
 extern void sync_dev(dev_t dev);
 extern int fsync_dev(dev_t dev);
@@ -444,6 +447,7 @@ extern struct buffer_head * getblk(dev_t dev, int block, int size);
 extern void ll_rw_block(int rw, int nr, struct buffer_head * bh[]);
 extern void ll_rw_page(int rw, int dev, int nr, char * buffer);
 extern void ll_rw_swap_file(int rw, int dev, unsigned int *b, int nb, char *buffer);
+extern int is_read_only(int dev);
 extern void brelse(struct buffer_head * buf);
 extern void set_blocksize(dev_t dev, int size);
 extern struct buffer_head * bread(dev_t dev, int block, int size);
@@ -464,10 +468,13 @@ extern int read_ahead[];
 extern int char_write(struct inode *, struct file *, char *, int);
 extern int block_write(struct inode *, struct file *, char *, int);
 
-extern int generic_mmap(struct inode *, struct file *, unsigned long, size_t, int, unsigned long);
+extern int generic_mmap(struct inode *, struct file *, struct vm_area_struct *);
 
 extern int block_fsync(struct inode *, struct file *);
 extern int file_fsync(struct inode *, struct file *);
+
+extern void dcache_add(struct inode *, const char *, int, unsigned long);
+extern int dcache_lookup(struct inode *, const char *, int, unsigned long *);
 
 extern inline struct inode * iget(struct super_block * sb,int nr)
 {

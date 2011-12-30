@@ -25,7 +25,7 @@
  * which can be dynamically activated and de-activated by the line
  * discipline handling modules (like SLIP).
  *
- * NOTE: pay no attention to the line discpline code (yet); its
+ * NOTE: pay no attention to the line discipline code (yet); its
  * interface is still subject to change in this version...
  * -- TYT, 1/31/92
  *
@@ -75,7 +75,7 @@ extern int shift_state;
 extern int do_screendump(int arg);
 
 struct termios tty_std_termios;		/* for the benefit of tty drivers  */
-struct tty_driver *tty_drivers;		/* linked list of tty drivers */
+struct tty_driver *tty_drivers = NULL;	/* linked list of tty drivers */
 struct tty_ldisc ldiscs[NR_LDISCS];	/* line disc dispatch table	*/
 
 /*
@@ -390,7 +390,7 @@ int tty_hung_up_p(struct file * filp)
 
 /*
  * This function is typically called only by the session leader, when
- * it wants to dissassociate itself from its controlling tty.
+ * it wants to disassociate itself from its controlling tty.
  *
  * It performs the following functions:
  * 	(1)  Sends a SIGHUP and SIGCONT to the foreground process group
@@ -438,8 +438,6 @@ int vt_waitactive(void)
 }
 
 #define vt_wake_waitactive() wake_up(&vt_activate_queue)
-
-extern int kill_proc(int pid, int sig, int priv);
 
 /*
  * Performs the back end of a vt switch
@@ -636,7 +634,7 @@ static int tty_read(struct inode * inode, struct file * file, char * buf, int co
 	int i;
 	struct tty_struct * tty;
 
-	tty = file->private_data;
+	tty = (struct tty_struct *)file->private_data;
 	if (tty_paranoia_check(tty, inode->i_rdev, "tty_read"))
 		return -EIO;
 	if (!tty || (tty->flags & (1 << TTY_IO_ERROR)))
@@ -678,7 +676,7 @@ static int tty_write(struct inode * inode, struct file * file, char * buf, int c
 	if (is_console && redirect)
 		tty = redirect;
 	else
-		tty = file->private_data;
+		tty = (struct tty_struct *)file->private_data;
 	if (tty_paranoia_check(tty, inode->i_rdev, "tty_write"))
 		return -EIO;
 	if (!tty || !tty->driver.write || (tty->flags & (1 << TTY_IO_ERROR)))
@@ -888,7 +886,7 @@ static void release_dev(struct file * filp)
 	int	idx;
 	
 
-	tty = filp->private_data;
+	tty = (struct tty_struct *)filp->private_data;
 	if (tty_paranoia_check(tty, filp->f_inode->i_rdev, "release_dev"))
 		return;
 
@@ -1138,7 +1136,7 @@ static int tty_select(struct inode * inode, struct file * filp, int sel_type, se
 {
 	struct tty_struct * tty;
 
-	tty = filp->private_data;
+	tty = (struct tty_struct *)filp->private_data;
 	if (tty_paranoia_check(tty, inode->i_rdev, "tty_select"))
 		return 0;
 
@@ -1152,7 +1150,7 @@ static int tty_fasync(struct inode * inode, struct file * filp, int on)
 	struct tty_struct * tty;
 	struct fasync_struct *fa, *prev;
 
-	tty = filp->private_data;
+	tty = (struct tty_struct *)filp->private_data;
 	if (tty_paranoia_check(tty, inode->i_rdev, "tty_fasync"))
 		return 0;
 
@@ -1164,7 +1162,7 @@ static int tty_fasync(struct inode * inode, struct file * filp, int on)
 	if (on) {
 		if (fa)
 			return 0;
-		fa = kmalloc(sizeof(struct fasync_struct), GFP_KERNEL);
+		fa = (struct fasync_struct *)kmalloc(sizeof(struct fasync_struct), GFP_KERNEL);
 		if (!fa)
 			return -ENOMEM;
 		fa->magic = FASYNC_MAGIC;
@@ -1230,7 +1228,7 @@ static int tty_ioctl(struct inode * inode, struct file * file,
 	unsigned char	ch;
 	char	mbz = 0;
 	
-	tty = file->private_data;
+	tty = (struct tty_struct *)file->private_data;
 	if (tty_paranoia_check(tty, inode->i_rdev, "tty_ioctl"))
 		return -EINVAL;
 
@@ -1466,11 +1464,11 @@ void do_SAK( struct tty_struct *tty)
 
 /*
  * This routine is called out of the software interrupt to flush data
- * from the flip buffer to the line discpline.
+ * from the flip buffer to the line discipline.
  */
-static void flush_to_ldisc(void *private)
+static void flush_to_ldisc(void *private_)
 {
-	struct tty_struct *tty = private;
+	struct tty_struct *tty = (struct tty_struct *) private_;
 	unsigned char	*cp;
 	char		*fp;
 	int		count;
@@ -1531,13 +1529,14 @@ void tty_default_put_char(struct tty_struct *tty, unsigned char ch)
  */
 int tty_register_driver(struct tty_driver *driver)
 {
+	int error;
+
 	if (driver->flags & TTY_DRIVER_INSTALLED)
 		return 0;
-	/*
-	 * XXX need to check to see if major device already
-	 * registered, and then handle error checking.
-	 */
-	(void) register_chrdev(driver->major, driver->name, &tty_fops);
+
+	error = register_chrdev(driver->major, driver->name, &tty_fops);
+	if (error)
+		return error;
 
 	if (!driver->put_char)
 		driver->put_char = tty_default_put_char;
@@ -1549,16 +1548,14 @@ int tty_register_driver(struct tty_driver *driver)
 	return 0;
 }
 
-long tty_init(long kmem_start)
+/*
+ * Initialize the console device. This is called *early*, so
+ * we can't necessarily depend on lots of kernel help here.
+ * Jus do some early initializations, and do the complex setup
+ * later.
+ */
+long console_init(long kmem_start, long kmem_end)
 {
-	if (sizeof(struct tty_struct) > PAGE_SIZE)
-		panic("size of tty structure > PAGE_SIZE!");
-	if (register_chrdev(TTY_MAJOR,"tty",&tty_fops))
-		panic("unable to get major %d for tty device", TTY_MAJOR);
-	if (register_chrdev(TTYAUX_MAJOR,"tty",&tty_fops))
-		panic("unable to get major %d for tty device", TTYAUX_MAJOR);
-	tty_drivers = 0;
-
 	/* Setup the default TTY line discipline. */
 	memset(ldiscs, 0, sizeof(ldiscs));
 	(void) tty_register_ldisc(N_TTY, &tty_ldisc_N_TTY);
@@ -1574,8 +1571,27 @@ long tty_init(long kmem_start)
 	tty_std_termios.c_cflag = B38400 | CS8 | CREAD;
 	tty_std_termios.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK |
 		ECHOCTL | ECHOKE | IEXTEN;
-	
-	kmem_start = con_init(kmem_start);
+
+	/*
+	 * set up the console device so that later boot sequences can 
+	 * inform about problems etc..
+	 */
+	return con_init(kmem_start);
+}
+
+/*
+ * Ok, now we can initialize the rest of the tty devices and can count
+ * on memory allocations, interrupts etc..
+ */
+long tty_init(long kmem_start)
+{
+	if (sizeof(struct tty_struct) > PAGE_SIZE)
+		panic("size of tty structure > PAGE_SIZE!");
+	if (register_chrdev(TTY_MAJOR,"tty",&tty_fops))
+		panic("unable to get major %d for tty device", TTY_MAJOR);
+	if (register_chrdev(TTYAUX_MAJOR,"tty",&tty_fops))
+		panic("unable to get major %d for tty device", TTYAUX_MAJOR);
+
 	kmem_start = kbd_init(kmem_start);
 	kmem_start = rs_init(kmem_start);
 	kmem_start = pty_init(kmem_start);

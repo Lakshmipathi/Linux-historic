@@ -1,43 +1,44 @@
 /*---------------------------------------------------------------------------+
- |  polynomial.S                                                             |
+ |  polynomial_Xsig.S                                                        |
  |                                                                           |
  | Fixed point arithmetic polynomial evaluation.                             |
  |                                                                           |
- | Copyright (C) 1992,1993                                                   |
+ | Copyright (C) 1992,1993,1994                                              |
  |                       W. Metzenthen, 22 Parker St, Ormond, Vic 3163,      |
  |                       Australia.  E-mail   billm@vaxc.cc.monash.edu.au    |
  |                                                                           |
  | Call from C as:                                                           |
- |   void polynomial(unsigned accum[], unsigned x[], unsigned terms[][2],    |
- |                   int n)                                                  |
+ |   void polynomial_Xsig(Xsig *accum, unsigned long long x,                 |
+ |                        unsigned long long terms[], int n)                 |
  |                                                                           |
  | Computes:                                                                 |
  | terms[0] + (terms[1] + (terms[2] + ... + (terms[n-1]*x)*x)*x)*x) ... )*x  |
- | The result is returned in accum.                                          |
+ | and adds the result to the 12 byte Xsig.                                  |
+ | The terms[] are each 8 bytes, but all computation is performed to 12 byte |
+ | precision.                                                                |
+ |                                                                           |
+ | This function must be used carefully: most overflow of intermediate       |
+ | results is controlled, but overflow of the result is not.                 |
  |                                                                           |
  +---------------------------------------------------------------------------*/
-
-	.file	"fpolynom.s"
+	.file	"polynomial_Xsig.S"
 
 #include "fpu_asm.h"
 
-
-/*	#define	EXTRA_PRECISE	// Do not use: not complete */
 
 #define	TERM_SIZE	$8
 #define	SUM_MS		-20(%ebp)	/* sum ms long */
 #define SUM_MIDDLE	-24(%ebp)	/* sum middle long */
 #define	SUM_LS		-28(%ebp)	/* sum ls long */
-#define	SUM_LS_HI	-25(%ebp)	/* high byte of sum ls */
 #define	ACCUM_MS	-4(%ebp)	/* accum ms long */
 #define	ACCUM_MIDDLE	-8(%ebp)	/* accum middle long */
 #define	ACCUM_LS	-12(%ebp)	/* accum ls long */
-#define ACCUM_LS_HI	-9(%ebp)	/* high byte of accum ls */
+#define OVERFLOWED      -16(%ebp)	/* addition overflow flag */
 
 .text
 	.align 2,144
-.globl _polynomial
-_polynomial:
+.globl _polynomial_Xsig
+_polynomial_Xsig:
 	pushl	%ebp
 	movl	%esp,%ebp
 	subl	$32,%esp
@@ -58,6 +59,7 @@ _polynomial:
 	movl	%edx,SUM_MIDDLE
 	xor	%eax,%eax
 	movl	%eax,SUM_LS
+	movb	%al,OVERFLOWED
 
 	subl	TERM_SIZE,%edi
 	decl	PARAM4
@@ -70,7 +72,6 @@ L_accum_loop:
 
 	movl	SUM_MIDDLE,%eax
 	mull	(%esi)			/* x ls long */
-/*	movl	%eax,-16(%ebp)		// Not needed */
 	movl	%edx,ACCUM_LS
 
 	movl	SUM_MIDDLE,%eax
@@ -90,49 +91,44 @@ L_accum_loop:
 	addl	%eax,ACCUM_MIDDLE
 	adcl	%edx,ACCUM_MS
 
+	testb	$0xff,OVERFLOWED
+	jz	L_no_overflow
+
+	movl	(%esi),%eax
+	addl	%eax,ACCUM_MIDDLE
+	movl	4(%esi),%eax
+	adcl	%eax,ACCUM_MS		/* This could overflow too */
+
+L_no_overflow:
+
 /*
  * Now put the sum of next term and the accumulator
  * into the sum register
  */
-	movl	ACCUM_MIDDLE,%eax
+	movl	ACCUM_LS,%eax
 	addl	(%edi),%eax		/* term ls long */
+	movl	%eax,SUM_LS
+	movl	ACCUM_MIDDLE,%eax
+	adcl	(%edi),%eax		/* term ls long */
 	movl	%eax,SUM_MIDDLE
 	movl	ACCUM_MS,%eax
 	adcl	4(%edi),%eax		/* term ms long */
 	movl	%eax,SUM_MS
-
-#ifdef EXTRA_PRECISE
-	movl	ACCUM_LS,%eax
-	movl	%eax,SUM_LS
-#else
-	testb	$0x80,ACCUM_LS_HI	/* ms bit of ACCUM_LS */
-	je	L_no_poly_round
-
-	addl	$1,SUM_MIDDLE
-	adcl	$0,SUM_MS
-L_no_poly_round:
-#endif EXTRA_PRECISE
+	sbbb	%al,%al
+	movb	%al,OVERFLOWED		/* Used in the next iteration */
 
 	subl	TERM_SIZE,%edi
 	decl	PARAM4
 	jns	L_accum_loop
 
 L_accum_done:
-#ifdef EXTRA_PRECISE
-/* Round the result */
-	testb	$128,SUM_LS_HI
-	je	L_poly_done
-
-	addl	$1,SUM_MIDDLE
-	adcl	$0,SUM_MS
-#endif EXTRA_PRECISE
-
-L_poly_done:
 	movl	PARAM1,%edi		/* accum */
+	movl	SUM_LS,%eax
+	addl	%eax,(%edi)
 	movl	SUM_MIDDLE,%eax
-	movl	%eax,(%edi)
+	adcl	%eax,4(%edi)
 	movl	SUM_MS,%eax
-	movl	%eax,4(%edi)
+	adcl	%eax,8(%edi)
 
 	popl	%ebx
 	popl	%edi

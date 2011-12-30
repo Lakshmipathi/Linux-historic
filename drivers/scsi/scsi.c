@@ -64,14 +64,14 @@ const char *const scsi_device_types[MAX_SCSI_DEVICE_CODE] =
 
 /*
 	global variables : 
-	NR_SCSI_DEVICES is the number of SCSI devices we have detected, 
 	scsi_devices an array of these specifing the address for each 
 	(host, id, LUN)
 */
-	
-int NR_SCSI_DEVICES=0;
 
 Scsi_Device * scsi_devices = NULL;
+
+/* Process ID of SCSI commands */
+unsigned long scsi_pid = 0;
 
 static unsigned char generic_sense[6] = {REQUEST_SENSE, 0,0,0, 255, 0};
 
@@ -155,6 +155,7 @@ static struct blist blacklist[] =
 				 * controller, which causes SCSI code to reset bus.*/
    {"TEXEL","CD-ROM","1.06"},   /* causes failed REQUEST SENSE on lun 1 for seagate
 				 * controller, which causes SCSI code to reset bus.*/
+   {"QUANTUM","LPS525S","3110"},/* Locks sometimes if polled for lun != 0 */
    {NULL, NULL, NULL}};	
 
 static int blacklisted(unsigned char * response_data){
@@ -183,7 +184,7 @@ static int blacklisted(unsigned char * response_data){
  *	scsi_do_cmd() function.
  */
 
-static volatile int in_scan = 0;
+volatile int in_scan_scsis = 0;
 static int the_result;
 static void scan_scsis_done (Scsi_Cmnd * SCpnt)
 	{
@@ -221,9 +222,10 @@ static void scan_scsis (struct Scsi_Host * shpnt)
   unsigned char scsi_cmd [12];
   unsigned char scsi_result [256];
   Scsi_Device * SDpnt, *SDtail;
+  struct Scsi_Device_Template * sdtpnt;
   Scsi_Cmnd  SCmd;
   
-  ++in_scan;
+  ++in_scan_scsis;
   lun = 0;
   type = -1;
   SCmd.next = NULL;
@@ -249,6 +251,7 @@ static void scan_scsis (struct Scsi_Host * shpnt)
 	  SDpnt->lun = lun;
 	  SDpnt->device_wait = NULL;
 	  SDpnt->next = NULL;
+	  SDpnt->attached = 0;
 /*
  * Assume that the device will have handshaking problems, and then 
  * fix this field later if it turns out it doesn't.
@@ -325,7 +328,7 @@ static void scan_scsis (struct Scsi_Host * shpnt)
 	  if (!the_result)
 	    printk("scsi: INQUIRY successful\n");
 	  else
-	    printk("scsi: INQUIRY failed with code %08x\n");
+	    printk("scsi: INQUIRY failed with code %08x\n", the_result);
 #endif
 	  
 	  if(the_result) break; 
@@ -382,29 +385,11 @@ static void scan_scsis (struct Scsi_Host * shpnt)
 	      if (type != -1)
 		{
 		  print_inquiry(scsi_result);
-		  switch(type){
-		  case TYPE_TAPE:
-		    printk("Detected scsi tape st%d at scsi%d, id %d, lun %d\n", MAX_ST,
-			   shpnt->host_no , dev, lun); 
-		    if(NR_ST != -1) ++MAX_ST;
-		    break;
-		  case TYPE_ROM:
-		    printk("Detected scsi CD-ROM sr%d at scsi%d, id %d, lun %d\n", MAX_SR,
-			   shpnt->host_no , dev, lun); 
-		    if(NR_SR != -1) ++MAX_SR;
-		    break;
-		  case TYPE_DISK:
-		  case TYPE_MOD:
-		    printk("Detected scsi disk sd%c at scsi%d, id %d, lun %d\n", 'a'+MAX_SD,
-			   shpnt->host_no , dev, lun); 
-		    if(NR_SD != -1) ++MAX_SD;
-		    break;
-		  default:
-		    break;
-		  };
-		  
-		  if(NR_SG != -1) ++MAX_SG;
-		  
+
+		  for(sdtpnt = scsi_devicelist; sdtpnt; sdtpnt = sdtpnt->next)
+		    if(sdtpnt->detect) SDpnt->attached +=
+		      (*sdtpnt->detect)(SDpnt);
+
 		  SDpnt->scsi_level = scsi_result[2] & 0x07;
 		  if (SDpnt->scsi_level >= 2 ||
 		      (SDpnt->scsi_level == 1 &&
@@ -483,7 +468,6 @@ static void scan_scsis (struct Scsi_Host * shpnt)
 		    scsi_devices = SDpnt;
 		  SDtail = SDpnt;
 
-		  ++NR_SCSI_DEVICES;
 		  SDpnt = (Scsi_Device *) scsi_init_malloc(sizeof (Scsi_Device));
 		  /* Some scsi devices cannot be polled for lun != 0
 		     due to firmware bugs */
@@ -501,21 +485,17 @@ static void scan_scsis (struct Scsi_Host * shpnt)
   shpnt->host_queue = NULL;  /* No longer needed here */
   
   printk("scsi : detected ");
-  if(NR_SD != -1)
-    printk("%d SCSI disk%s ", MAX_SD, (MAX_SD != 1) ? "s" : "");
-  
-  if(NR_ST != -1)
-    printk("%d tape%s ", MAX_ST, (MAX_ST != 1) ? "s" : "");
-  
-  if(NR_SR != -1)
-    printk("%d CD-ROM drive%s ", MAX_SR, (MAX_SR != 1) ? "s" : "");
-  
+  for(sdtpnt = scsi_devicelist; sdtpnt; sdtpnt = sdtpnt->next)
+    if(sdtpnt->dev_noticed && sdtpnt->name)
+      printk("%d SCSI %s%s ", sdtpnt->dev_noticed, sdtpnt->name,
+	     (sdtpnt->dev_noticed != 1) ? "s" : "");
+
   printk("total.\n");
   
   /* Last device block does not exist.  Free memory. */
   scsi_init_free((char *) SDpnt, sizeof(Scsi_Device));
   
-  in_scan = 0;
+  in_scan_scsis = 0;
 }       /* scan_scsis  ends */
 
 /*
@@ -537,9 +517,11 @@ static void scsi_times_out (Scsi_Cmnd * SCpnt)
  	switch (SCpnt->internal_timeout & (IN_ABORT | IN_RESET))
 		{
 		case NORMAL_TIMEOUT:
-			if (!in_scan) {
-			  printk("SCSI host %d timed out - aborting command\n",
-				 SCpnt->host->host_no);
+			if (!in_scan_scsis) {
+			      printk("scsi : aborting command due to timeout : pid %lu, scsi%d, id %d, lun %d ",
+				SCpnt->pid, SCpnt->host->host_no, (int) SCpnt->target, (int) 
+				SCpnt->lun);
+				print_command (SCpnt->cmnd);
 #ifdef DEBUG_TIMEOUT
 			  scsi_dump_status();
 #endif
@@ -784,7 +766,6 @@ update_timeout(SCpnt, SCpnt->timeout_per_command);
 
         if (host->hostt->can_queue)
 		{
-		  extern unsigned long intr_count;
 #ifdef DEBUG
 	printk("queuecommand : routine at %08x\n", 
 		host->hostt->queuecommand);
@@ -888,6 +869,8 @@ void scsi_do_cmd (Scsi_Cmnd * SCpnt, const void *cmnd ,
 	time we check for the host being not busy, and the time we mark it busy
 	ourselves.
 */
+
+	SCpnt->pid = scsi_pid++; 
 
 	while (1==1){
 	  cli();
@@ -1756,6 +1739,7 @@ unsigned long scsi_dev_init (unsigned long memory_start,unsigned long memory_end
 	struct Scsi_Host * host = NULL;
 	Scsi_Device * SDpnt;
 	struct Scsi_Host * shpnt;
+	struct Scsi_Device_Template * sdtpnt;
 	Scsi_Cmnd * SCpnt;
 #ifdef FOO_ON_YOU
 	return;
@@ -1776,29 +1760,14 @@ unsigned long scsi_dev_init (unsigned long memory_start,unsigned long memory_end
 	for (shpnt = scsi_hostlist; shpnt; shpnt = shpnt->next)
 	  scan_scsis(shpnt);           /* scan for scsi devices */
 
-	sd_init1();
-        st_init1();
-	sr_init1();
-	sg_init1();
+	for(sdtpnt = scsi_devicelist; sdtpnt; sdtpnt = sdtpnt->next)
+	  if(sdtpnt->init && sdtpnt->dev_noticed) (*sdtpnt->init)();
 
 	for (SDpnt=scsi_devices; SDpnt; SDpnt = SDpnt->next) {
 	  int j;
 	  SDpnt->scsi_request_fn = NULL;
-	  switch (SDpnt->type)
-	    {
-	    case TYPE_TAPE :
-	      st_attach(SDpnt);
-	      break;
-	    case TYPE_ROM:
-	      sr_attach(SDpnt);
-	      break;
-	    case TYPE_DISK:
-	    case TYPE_MOD:
-	      sd_attach(SDpnt);
-	    default:
-	      break;
-	    };
-	  sg_attach(SDpnt);
+	  for(sdtpnt = scsi_devicelist; sdtpnt; sdtpnt = sdtpnt->next)
+	    if(sdtpnt->attach) (*sdtpnt->attach)(SDpnt);
 	  if(SDpnt->type != -1){
 	    for(j=0;j<SDpnt->host->hostt->cmd_per_lun;j++){
 	      SCpnt = (Scsi_Cmnd *) scsi_init_malloc(sizeof(Scsi_Cmnd));
@@ -1822,8 +1791,7 @@ unsigned long scsi_dev_init (unsigned long memory_start,unsigned long memory_end
 	  };
 	};
 
-	memory_start = scsi_init_memory_start;
-	if (NR_SD > 0 || NR_SR > 0 || NR_ST > 0)
+	if (scsi_devicelist)
 	  dma_sectors = 16;  /* Base value we use */
 
 	for (SDpnt=scsi_devices; SDpnt; SDpnt = SDpnt->next) {
@@ -1846,23 +1814,25 @@ unsigned long scsi_dev_init (unsigned long memory_start,unsigned long memory_end
 	dma_sectors = (dma_sectors + 15) & 0xfff0;
 	dma_free_sectors = dma_sectors;  /* This must be a multiple of 16 */
 
-	memory_start = (memory_start + 3) & 0xfffffffc;
-	dma_malloc_freelist = (unsigned short *) memory_start;
-	memory_start += dma_sectors >> 3;
+	scsi_init_memory_start = (scsi_init_memory_start + 3) & 0xfffffffc;
+	dma_malloc_freelist = (unsigned short *) 
+	  scsi_init_malloc(dma_sectors >> 3);
 	memset(dma_malloc_freelist, 0, dma_sectors >> 3);
 
-	if(memory_start & 1) memory_start++; /* Some host adapters require
-						buffers to be word aligned */
-	dma_malloc_buffer = (unsigned char *) memory_start;
-	memory_start += dma_sectors << 9;
+	/* Some host adapters require buffers to be word aligned */
+	if(scsi_init_memory_start & 1) scsi_init_memory_start++;
 
-	memory_start = sd_init(memory_start, memory_end); /* init scsi disks */
-        memory_start = st_init(memory_start, memory_end); /* init scsi tapes */
-	memory_start = sr_init(memory_start, memory_end); /* init scsi CDROMs */
-	memory_start = sg_init(memory_start, memory_end); /* init scsi generic */
+	dma_malloc_buffer = (unsigned char *) 
+	  scsi_init_malloc(dma_sectors << 9);
+	
+	/* OK, now we finish the initialization by doing spin-up, read
+	   capacity, etc, etc */
+	for(sdtpnt = scsi_devicelist; sdtpnt; sdtpnt = sdtpnt->next)
+	  if(sdtpnt->finish && sdtpnt->nr_dev)
+	    (*sdtpnt->finish)();
 	
 	scsi_loadable_module_flag = 1;
-	return memory_start;
+	return scsi_init_memory_start;
 	}
 
 static void print_inquiry(unsigned char *data)

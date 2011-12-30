@@ -34,7 +34,7 @@
 
 /*
  * Size of the lookup cache in units of number of entries cached.
- * It is better not to make this too large although the optimimum
+ * It is better not to make this too large although the optimum
  * depends on a usage and environment.
  */
 
@@ -112,8 +112,7 @@ extern struct inode_operations nfs_symlink_inode_operations;
 
 /* linux/fs/nfs/mmap.c */
 
-extern int nfs_mmap(struct inode * inode, struct file * file,
-               unsigned long addr, size_t len, int prot, unsigned long off);
+extern int nfs_mmap(struct inode * inode, struct file * file, struct vm_area_struct * vma);
 
 #endif /* __KERNEL__ */
 

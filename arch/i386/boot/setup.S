@@ -26,6 +26,10 @@
 #define SVGA_MODE ASK_VGA
 #endif
 
+! Signature words to ensure LILO loaded us right
+#define SIG1	0xAA55
+#define SIG2	0x5A5A
+
 INITSEG  = DEF_INITSEG	! we move boot here - out of the way
 SYSSEG   = DEF_SYSSEG	! system loaded at 0x10000 (65536).
 SETUPSEG = DEF_SETUPSEG	! this is the current segment
@@ -41,11 +45,86 @@ begbss:
 
 entry start
 start:
+! Check signature at end of setup
+	mov	ax,#SETUPSEG
+	mov	ds,ax
+	cmp	setup_sig1,#SIG1
+	jne	bad_sig
+	cmp	setup_sig2,#SIG2
+	jne	bad_sig
+	jmp	good_sig1
 
-! ok, the read went well so we get current cursor position and save it for
-! posterity.
+! Routine to print asciiz-string at DS:SI
 
-	mov	ax,#INITSEG	! this is done in bootsect already, but...
+prtstr:	lodsb
+	and	al,al
+	jz	fin
+	call	prnt1
+	jmp	prtstr
+fin:	ret
+
+! Part of above routine, this one just prints ascii al
+
+prnt1:	push	ax
+	push	cx
+	xor	bh,bh
+	mov	cx,#0x01
+	mov	ah,#0x0e
+	int	0x10
+	pop	cx
+	pop	ax
+	ret
+
+beep:	mov	al,#0x07
+	jmp	prnt1
+	
+no_sig_mess:	.ascii	"No setup signature found ..."
+		db	0x00
+start_sys_seg:	.word	SYSSEG
+
+good_sig1:
+	jmp	good_sig
+
+! We now have to find the rest of the setup code/data
+bad_sig:
+	mov	ax,#INITSEG
+	mov	ds,ax
+	xor	bh,bh
+	mov	bl,[497]	! get setup sects from boot sector
+	sub	bx,#4		! LILO loads 4 sectors of setup
+	shl	bx,#8		! convert to words
+	mov	cx,bx
+	shr	bx,#3		! convert to segment
+	add	bx,#SYSSEG
+	seg cs
+	mov	start_sys_seg,bx
+
+! Move rest of setup code/data to here
+	mov	di,#2048	! four sectors loaded by LILO
+	sub	si,si
+	mov	ax,#SETUPSEG
+	mov	es,ax
+	mov	ax,#SYSSEG
+	mov	ds,ax
+	rep
+	movsw
+
+	mov	ax,#SETUPSEG
+	mov	ds,ax
+	cmp	setup_sig1,#SIG1
+	jne	no_sig
+	cmp	setup_sig2,#SIG2
+	jne	no_sig
+	jmp	good_sig
+
+no_sig:
+	lea	si,no_sig_mess
+	call	prtstr
+no_sig_loop:
+	jmp	no_sig_loop
+
+good_sig:
+	mov	ax,#INITSEG
 	mov	ds,ax
 
 ! Get memory size (extended mem, kB)
@@ -155,7 +234,8 @@ no_psmouse:
 ! first we move the system to its rightful place
 
 	mov	ax,#0x100	! start of destination segment
-	mov	bx,#0x1000	! start of source segment
+	seg cs
+	mov	bx,start_sys_seg	! start of source segment
 	cld			! 'direction'=0, movs moves forward
 do_move:
 	mov	es,ax		! destination segment
@@ -243,7 +323,7 @@ end_move:
 ! we let the gnu-compiled 32-bit programs do that. We just jump to
 ! absolute address 0x00000, in 32-bit protected mode.
 !
-! Note that the short jump isn't strictly needed, althought there are
+! Note that the short jump isn't strictly needed, although there are
 ! reasons why it might be a good idea. It won't hurt in any case.
 !
 	xor	ax,ax
@@ -408,7 +488,7 @@ svga:   cld
 	mov	bh,al		! store current value of CRT-register 0x38
 	mov	ax,#0x0038
 	call	outidx		! disable writing to special regs
-	movb	al,cl		! check wether we can write special reg 0x35
+	movb	al,cl		! check whether we can write special reg 0x35
 	call	inidx
 	movb	bl,al		! save the current value of CRT reg 0x35
 	andb	al,#0xf0	! clear bits 0-3
@@ -436,7 +516,7 @@ s3_2:	mov	ax,cx		! load ah with 0xf and al with 0x35
 	je	no_s3		! writing is allowed => this is not an S3
 s3_1:	mov	ax,#0x4838	! allow writing to special regs by putting
 	call	outidx		! magic number into CRT-register 0x38
-	movb	al,cl		! check wether we can write special reg 0x35
+	movb	al,cl		! check whether we can write special reg 0x35
 	call	inidx
 	movb	bl,al
 	andb	al,#0xf0
@@ -790,15 +870,6 @@ inidx:	out	dx,al
 	dec	dx
 	ret
 
-! Routine to print asciiz-string at DS:SI
-
-prtstr:	lodsb
-	and	al,al
-	jz	fin
-	call	prnt1
-	jmp	prtstr
-fin:	ret
-
 ! Routine to print a decimal value on screen, the value to be
 ! printed is put in al (i.e 0-255). 
 
@@ -840,21 +911,6 @@ digit:	add	al,#0x30
 	pop	ax
 	ret
 
-! Part of above routine, this one just prints ascii al
-
-prnt1:	push	ax
-	push	cx
-	xor	bh,bh
-	mov	cx,#0x01
-	mov	ah,#0x0e
-	int	0x10
-	pop	cx
-	pop	ax
-	ret
-
-beep:	mov	al,#0x07
-	jmp	prnt1
-	
 gdt:
 	.word	0,0,0,0		! dummy
 
@@ -928,7 +984,7 @@ dsccandt:	.word	0x5032, 0x501c, 0x8419, 0x8432
 dsccirrus:	.word	0x5032, 0x501c, 0x8419, 0x842c, 0x841e, 0x6425
 dsceverex:	.word	0x5032, 0x501c, 0x5022, 0x503c, 0x642b, 0x644b, 0x8419, 0x842c, 0x501e, 0x641b, 0xa040, 0x841e
 dscgenoa:	.word	0x5032, 0x501c, 0x5020, 0x642a, 0x8419, 0x841d, 0x8420, 0x842c, 0x843c, 0x503c, 0x5042, 0x644b
-dscparadise:	.word	0x5032, 0x501c, 0x8419, 0x842b
+dscparadise:	.word	0x5032, 0x501c, 0x8419, 0x842c
 dsctrident:	.word 	0x5032, 0x501c, 0x501e, 0x502b, 0x503c, 0x8419, 0x841e, 0x842b, 0x843c
 dsctseng:	.word	0x5032, 0x501c, 0x503c, 0x6428, 0x8419, 0x841c, 0x842c
 dscvideo7:	.word	0x5032, 0x501c, 0x502b, 0x503c, 0x643c, 0x8419, 0x842c, 0x841c
@@ -937,7 +993,10 @@ dsc_S3:		.word	0x5032, 0x501c, 0x842b, 0x8419
 dsunknown:	.word	0x5032, 0x501c
 modesave:	.word	SVGA_MODE
 
-	
+! This must be last
+setup_sig1:	.word	SIG1
+setup_sig2:	.word	SIG2
+
 .text
 endtext:
 .data

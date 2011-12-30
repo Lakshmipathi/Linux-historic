@@ -25,8 +25,6 @@
 #include <linux/string.h>
 #include <linux/locks.h>
 
-extern int vsprintf (char *, const char *, va_list);
-
 void ext2_error (struct super_block * sb, const char * function,
 		 const char * fmt, ...)
 {
@@ -98,9 +96,6 @@ void ext2_put_super (struct super_block * sb)
 		sb->u.ext2_sb.s_es->s_state = sb->u.ext2_sb.s_mount_state;
 		mark_buffer_dirty(sb->u.ext2_sb.s_sbh, 1);
 	}
-#ifndef DONT_USE_DCACHE
-	ext2_dcache_invalidate (sb->s_dev);
-#endif
 	sb->s_dev = 0;
 	for (i = 0; i < EXT2_MAX_GROUP_DESC; i++)
 		if (sb->u.ext2_sb.s_group_desc[i])
@@ -321,7 +316,7 @@ static int ext2_check_descriptors (struct super_block * sb)
 		if (gdp->bg_block_bitmap < block ||
 		    gdp->bg_block_bitmap >= block + EXT2_BLOCKS_PER_GROUP(sb))
 		{
-			ext2_error (sb, "ext2_check_desciptors",
+			ext2_error (sb, "ext2_check_descriptors",
 				    "Block bitmap for group %d"
 				    " not in group (block %lu)!",
 				    i, gdp->bg_block_bitmap);
@@ -330,7 +325,7 @@ static int ext2_check_descriptors (struct super_block * sb)
 		if (gdp->bg_inode_bitmap < block ||
 		    gdp->bg_inode_bitmap >= block + EXT2_BLOCKS_PER_GROUP(sb))
 		{
-			ext2_error (sb, "ext2_check_desciptors",
+			ext2_error (sb, "ext2_check_descriptors",
 				    "Inode bitmap for group %d"
 				    " not in group (block %lu)!",
 				    i, gdp->bg_inode_bitmap);
@@ -340,7 +335,7 @@ static int ext2_check_descriptors (struct super_block * sb)
 		    gdp->bg_inode_table + sb->u.ext2_sb.s_itb_per_group >=
 		    block + EXT2_BLOCKS_PER_GROUP(sb))
 		{
-			ext2_error (sb, "ext2_check_desciptors",
+			ext2_error (sb, "ext2_check_descriptors",
 				    "Inode table for group %d"
 				    " not in group (block %lu)!",
 				    i, gdp->bg_inode_table);

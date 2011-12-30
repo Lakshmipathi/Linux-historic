@@ -1,5 +1,5 @@
 /*
- * 	NET3	Protocol independant device support routines.
+ * 	NET3	Protocol independent device support routines.
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -222,7 +222,7 @@ void dev_remove_pack(struct packet_type *pt)
 
 /*****************************************************************************************
 
-			    Device Inteface Subroutines
+			    Device Interface Subroutines
 
 ******************************************************************************************/
 
@@ -340,7 +340,7 @@ void dev_queue_xmit(struct sk_buff *skb, struct device *dev, int pri)
 	struct packet_type *ptype;
 	int where = 0;		/* used to say if the packet should go	*/
 				/* at the front or the back of the	*/
-				/* queue - front is a retranmsit try	*/
+				/* queue - front is a retransmit try	*/
 
 	if (dev == NULL) 
 	{
@@ -422,16 +422,19 @@ void dev_queue_xmit(struct sk_buff *skb, struct device *dev, int pri)
 	restore_flags(flags);
 
 	/* copy outgoing packets to any sniffer packet handlers */
-	for (nitcount = dev_nit, ptype = ptype_base; nitcount > 0 && ptype != NULL; ptype = ptype->next) {
-		if (ptype->type == htons(ETH_P_ALL)) {
-			struct sk_buff *skb2;
-			if ((skb2 = skb_clone(skb, GFP_ATOMIC)) == NULL)
-				break;
-			ptype->func(skb2, skb->dev, ptype);
-			nitcount--;
+	if(!where)
+	{
+		for (nitcount = dev_nit, ptype = ptype_base; nitcount > 0 && ptype != NULL; ptype = ptype->next) 
+		{
+			if (ptype->type == htons(ETH_P_ALL)) {
+				struct sk_buff *skb2;
+				if ((skb2 = skb_clone(skb, GFP_ATOMIC)) == NULL)
+					break;
+				ptype->func(skb2, skb->dev, ptype);
+				nitcount--;
+			}
 		}
 	}
-
 	if (dev->hard_start_xmit(skb, dev) == 0) {
 		/*
 		 *	Packet is now solely the responsibility of the driver
@@ -465,7 +468,6 @@ void dev_queue_xmit(struct sk_buff *skb, struct device *dev, int pri)
 void netif_rx(struct sk_buff *skb)
 {
 	static int dropping = 0;
-	extern struct timeval xtime;
 
 	/*
 	 *	Any received buffers are un-owned and should be discarded
@@ -478,7 +480,7 @@ void netif_rx(struct sk_buff *skb)
 		skb->stamp = xtime;
 
 	/*
-	 *	Check that we aren't oevrdoing things.
+	 *	Check that we aren't overdoing things.
 	 */
 
 	if (!backlog_size)
@@ -624,12 +626,12 @@ void dev_transmit(void)
 ***********************************************************************************/
 
 /*
- *	This is a single non-rentrant routine which takes the received packet
+ *	This is a single non-reentrant routine which takes the received packet
  *	queue and throws it at the networking layers in the hope that something
  *	useful will emerge.
  */
  
-volatile char in_bh = 0;	/* Non-rentrant remember */
+volatile char in_bh = 0;	/* Non-reentrant remember */
 
 int in_net_bh()	/* Used by timer.c */
 {
@@ -965,7 +967,7 @@ static int sprintf_stats(char *buffer, struct device *dev)
 }
 
 /*
- *	Called from the PROCfs module. This now uses the new arbitary sized /proc/net interface
+ *	Called from the PROCfs module. This now uses the new arbitrary sized /proc/net interface
  *	to create /proc/net/dev
  */
  
@@ -1112,7 +1114,7 @@ static int dev_ifsioc(void *arg, unsigned int getset)
 					 *	Check the flags.
 					 */
 					if(ret<0)
-						dev->flags&=~IFF_UP;	/* Didnt open so down the if */
+						dev->flags&=~IFF_UP;	/* Didn't open so down the if */
 			  	}
 	        	}
 			break;
@@ -1202,7 +1204,7 @@ static int dev_ifsioc(void *arg, unsigned int getset)
 			}
 			break;
 			
-		case SIOCGIFMETRIC:	/* Get the metric on the inteface (currently unused) */
+		case SIOCGIFMETRIC:	/* Get the metric on the interface (currently unused) */
 			
 			ifr.ifr_metric = dev->metric;
 			memcpy_tofs(arg, &ifr, sizeof(struct ifreq));

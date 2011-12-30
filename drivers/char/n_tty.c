@@ -1,5 +1,5 @@
 /*
- * n_tty.c --- implements the N_TTY line discpline.
+ * n_tty.c --- implements the N_TTY line discipline.
  * 
  * This code used to be in tty_io.c, but things are getting hairy
  * enough that it made sense to split things off.  (The N_TTY
@@ -8,7 +8,7 @@
  *
  * Note that the open routine for N_TTY is guaranteed never to return
  * an error.  This is because Linux will fall back to setting a line
- * to N_TTY if it can not switch to any other line discpline.  
+ * to N_TTY if it can not switch to any other line discipline.  
  *
  * Written by Theodore Ts'o, Copyright 1994.
  * 
@@ -76,7 +76,8 @@ void n_tty_flush_buffer(struct tty_struct * tty)
 	if (!tty->link)
 		return;
 
-	wake_up_interruptible(&tty->link->write_wait);
+	if (tty->driver.unthrottle)
+		(tty->driver.unthrottle)(tty);
 	if (tty->link->packet) {
 		tty->ctrl_status |= TIOCPKT_FLUSHREAD;
 		wake_up_interruptible(&tty->link->read_wait);
@@ -84,7 +85,7 @@ void n_tty_flush_buffer(struct tty_struct * tty)
 }
 
 /*
- * Return number of characters buffered to be delievered to user
+ * Return number of characters buffered to be delivered to user
  */
 int n_tty_chars_in_buffer(struct tty_struct *tty)
 {
@@ -111,7 +112,7 @@ static int opost(unsigned char c, struct tty_struct *tty)
 			if (O_ONLCR(tty)) {
 				if (space < 2)
 					return -1;
-				tty->driver.write(tty, 0, "\r", 1);
+				tty->driver.put_char(tty, '\r');
 				tty->column = 0;
 			}
 			tty->canon_column = tty->column;
@@ -895,12 +896,6 @@ static int read_chan(struct tty_struct *tty, struct file *file,
 
 	current->state = TASK_RUNNING;
 	current->timeout = 0;
-	/*
-	 * Hack for PTY's; we need to wake up the other tty if there's
-	 * enough space.
-	 */
-	if (tty->link && tty->read_cnt <= TTY_THRESHOLD_UNTHROTTLE)
-		wake_up_interruptible(&tty->link->write_wait);
 	return (b - buf) ? b - buf : retval;
 }
 
