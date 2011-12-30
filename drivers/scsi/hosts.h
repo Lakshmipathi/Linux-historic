@@ -21,8 +21,10 @@
 */
 
 
+/* It is senseless to set SG_ALL any higher than this - the performance
+   does not get any better, and it wastes memory */
 #define SG_NONE 0
-#define SG_ALL 0x7fff
+#define SG_ALL 0xff
 
 #define DISABLE_CLUSTERING 0
 #define ENABLE_CLUSTERING 1
@@ -42,8 +44,14 @@
 	type of host adapter that is supported on the system.
 */
 
-typedef struct     
+typedef struct scsi_disk Disk;
+
+typedef struct  SHT
 	{
+
+	  /* Used with loadable modules so we can construct a linked list. */
+	  struct SHT * next;
+
 	/*
 		The name pointer is a pointer to the name of the SCSI
 		device detected.
@@ -67,8 +75,10 @@ typedef struct
 		especially that scsi_malloc/scsi_free must not be called.
 	*/
 
-	int (* detect)(int); 
+	int (* detect)(struct SHT *); 
 
+	  /* Used with loadable modules to unload the host structures */
+	int (*release)(struct Scsi_Host *);
 	/*
 		The info function will return whatever useful
 		information the developer sees fit.              
@@ -144,7 +154,7 @@ typedef struct
 		size, device number, list (heads, sectors, cylinders)
 	*/ 
 
-	int (* bios_param)(int, int, int []);
+	int (* bios_param)(Disk *, int, int []);
 	
 	/*
 		This determines if we will use a non-interrupt driven
@@ -214,6 +224,7 @@ typedef struct
 struct Scsi_Host
 	{
 		struct Scsi_Host * next;
+		unsigned short extra_bytes;
 		volatile unsigned char host_busy;
 		char host_no;  /* Used for IOCTL_GET_IDLUN */
 		int last_reset;
@@ -234,21 +245,36 @@ struct Scsi_Host
 		int this_id;
 		short unsigned int sg_tablesize;
 		unsigned unchecked_isa_dma:1;
+		/*
+		   True if this host was loaded as a loadable module
+		   */
+		unsigned loaded_as_module:1;
+		
 		int hostdata[0];  /* Used for storage of host specific stuff */
 	};
 
 extern struct Scsi_Host * scsi_hostlist;
 
-extern Scsi_Host_Template scsi_hosts[];
+extern Scsi_Host_Template * scsi_hosts;
 
 /*
 	scsi_init initializes the scsi hosts.
 */
 
 
-unsigned int scsi_init(unsigned long memory_start,unsigned long memory_end);
-extern struct Scsi_Host * scsi_register(int i, int j);
-extern void scsi_unregister(struct Scsi_Host * i, int j);
+/* We use these goofy things because the MM is not set up when we init
+   the scsi subsystem.  By using these functions we can write code that
+   looks normal.  Also, it makes it possible to use the same code for a
+   loadable module. */
+
+extern void * scsi_init_malloc(unsigned int size);
+extern void scsi_init_free(char * ptr, unsigned int size);
+
+
+extern int scsi_loadable_module_flag;
+unsigned int scsi_init(void);
+extern struct Scsi_Host * scsi_register(Scsi_Host_Template *, int j);
+extern void scsi_unregister(struct Scsi_Host * i);
 
 #define BLANK_HOST {"", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #endif

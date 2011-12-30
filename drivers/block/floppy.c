@@ -74,6 +74,8 @@
 #define FLOPPY_DMA 2
 #define FDC_FIFO_UNTESTED           /* -bb */
 
+#define FDC_FIFO_BUG
+
 #include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
@@ -287,8 +289,8 @@ static void redo_fd_request(void);
 static void floppy_ready(void);
 static void recalibrate_floppy(void);
 
-static int floppy_grab_irq_and_dma(void);
-static void floppy_release_irq_and_dma(void);
+int floppy_grab_irq_and_dma(void);
+void floppy_release_irq_and_dma(void);
 
 /*
  * These are global variables, as that's the easiest way to give
@@ -407,7 +409,7 @@ void request_done(int uptodate)
  * to the desired drive, but it will probably not survive the sleep if
  * several floppies are used at the same time: thus the loop.
  */
-int floppy_change(struct buffer_head * bh)
+static int floppy_change(struct buffer_head * bh)
 {
 	unsigned int mask = 1 << (bh->b_dev & 0x03);
 
@@ -506,6 +508,32 @@ static void output_byte(char byte)
 	printk("Unable to send byte to FDC\n");
 }
 
+#ifdef FDC_FIFO_BUG
+
+static void output_byte_force(char byte)
+{
+	int counter;
+	unsigned char status;
+
+	if (reset)
+		return;
+	for (counter = 0 ; counter < 10000 ; counter++) {
+		status = inb_p(FD_STATUS);
+		if ((status & (STATUS_READY | STATUS_DIR)) == STATUS_READY) {
+			outb(byte,FD_DATA);
+			return;
+		}
+		if ((status & (STATUS_READY | STATUS_BUSY)) == (STATUS_READY | STATUS_BUSY)) {
+			outb(byte,FD_DATA);
+			return;
+		}
+	}
+	current_track = NO_TRACK;
+	reset = 1;
+	printk("Unable to send byte to FDC\n");
+}
+#endif		/* FDC_FIFO_BUG */
+
 static int result(void)
 {
 	int i = 0, counter, status;
@@ -565,15 +593,27 @@ static inline void perpendicular_mode(unsigned char rate)
 		if (rate & 0x40) {
 			unsigned char r = rate & 0x03;
 			if (r == 0)
+#ifndef FDC_FIFO_BUG
 				output_byte(2);	/* perpendicular, 500 kbps */
+#else
+				output_byte_force(2);	/* perpendicular, 500 kbps */
+#endif
 			else if (r == 3)
+#ifndef FDC_FIFO_BUG
 				output_byte(3);	/* perpendicular, 1Mbps */
+#else
+				output_byte_force(3);	/* perpendicular, 1Mbps */
+#endif
 			else {
 				printk(DEVICE_NAME ": Invalid data rate for perpendicular mode!\n");
 				reset = 1;
 			}
 		} else
+#ifndef FDC_FIFO_BUG
 			output_byte(0);		/* conventional mode */
+#else
+			output_byte_force(0);		/* conventional mode */
+#endif
 	} else {
 		if (rate & 0x40) {
 			printk(DEVICE_NAME ": perpendicular mode not supported by this FDC.\n");
@@ -594,9 +634,17 @@ static void configure_fdc_mode(void)
 	if (need_configure && (fdc_version == FDC_TYPE_82077)) {
 		/* Enhanced version with FIFO & vertical recording. */
 		output_byte(FD_CONFIGURE);
+#ifndef FDC_FIFO_BUG
 		output_byte(0);
+#else
+		output_byte_force(0);
+#endif
 		output_byte(0x1A);	/* FIFO on, polling off, 10 byte threshold */
+#ifndef FDC_FIFO_BUG
 		output_byte(0);		/* precompensation from track 0 upwards */
+#else
+		output_byte_force(0);		/* precompensation from track 0 upwards */
+#endif
 		need_configure = 0;
 		printk(DEVICE_NAME ": FIFO enabled\n");
 	}
@@ -1289,14 +1337,13 @@ static int floppy_open(struct inode * inode, struct file * filp)
 	int drive;
 	int old_dev;
 
-	if (floppy_grab_irq_and_dma()) {
-		return -EBUSY;
-	}
 	drive = inode->i_rdev & 3;
 	old_dev = fd_device[drive];
 	if (fd_ref[drive])
 		if (old_dev != inode->i_rdev)
 			return -EBUSY;
+	if (floppy_grab_irq_and_dma())
+		return -EBUSY;
 	fd_ref[drive]++;
 	fd_device[drive] = inode->i_rdev;
 	buffer_drive = buffer_track = -1;
@@ -1309,12 +1356,24 @@ static int floppy_open(struct inode * inode, struct file * filp)
 
 static void floppy_release(struct inode * inode, struct file * filp)
 {
-	sync_dev(inode->i_rdev);
+	fsync_dev(inode->i_rdev);
 	if (!fd_ref[inode->i_rdev & 3]--) {
 		printk("floppy_release with fd_ref == 0");
 		fd_ref[inode->i_rdev & 3] = 0;
 	}
         floppy_release_irq_and_dma();
+}
+
+static int check_floppy_change(dev_t dev)
+{
+	int i;
+	struct buffer_head * bh;
+
+	if (!(bh = getblk(dev,0,1024)))
+		return 0;
+	i = floppy_change(bh);
+	brelse(bh);
+	return i;
 }
 
 static struct file_operations floppy_fops = {
@@ -1327,24 +1386,11 @@ static struct file_operations floppy_fops = {
 	NULL,			/* mmap */
 	floppy_open,		/* open */
 	floppy_release,		/* release */
-	block_fsync		/* fsync */
+	block_fsync,		/* fsync */
+	NULL,			/* fasync */
+	check_floppy_change,	/* media_change */
+	NULL			/* revalidate */
 };
-
-
-/*
- * The version command is not supposed to generate an interrupt, but
- * my FDC does, except when booting in SVGA screen mode.
- * When it does generate an interrupt, it doesn't return any status bytes.
- * It appears to have something to do with the version command...
- *
- * This should never be called, because of the reset after the version check.
- */
-static void ignore_interrupt(void)
-{
-	printk(DEVICE_NAME ": weird interrupt ignored (%d)\n", result());
-	reset = 1;
-	CLEAR_INTR;	/* ignore only once */
-}
 
 
 static void floppy_interrupt(int unused)
@@ -1381,7 +1427,6 @@ void floppy_init(void)
 	timer_active &= ~(1 << FLOPPY_TIMER);
 	config_types();
 	/* Try to determine the floppy controller type */
-	DEVICE_INTR = ignore_interrupt;	/* don't ask ... */
 	output_byte(FD_VERSION);	/* get FDC version code */
 	if (result() != 1) {
 		printk(DEVICE_NAME ": FDC failed to return version byte\n");
@@ -1404,8 +1449,12 @@ void floppy_init(void)
 	}
 }
 
-static int floppy_grab_irq_and_dma(void)
+static int usage_count = 0;
+
+int floppy_grab_irq_and_dma(void)
 {
+	if (usage_count++)
+		return 0;
 	if (irqaction(FLOPPY_IRQ,&floppy_sigaction)) {
 		printk("Unable to grab IRQ%d for the floppy driver\n", FLOPPY_IRQ);
 		return -1;
@@ -1419,8 +1468,10 @@ static int floppy_grab_irq_and_dma(void)
 	return 0;
 }
 
-static void floppy_release_irq_and_dma(void)
+void floppy_release_irq_and_dma(void)
 {
+	if (--usage_count)
+		return;
 	disable_dma(FLOPPY_DMA);
 	free_dma(FLOPPY_DMA);
 	disable_irq(FLOPPY_IRQ);

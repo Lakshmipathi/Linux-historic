@@ -17,7 +17,6 @@
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/ioport.h>
-#include <linux/config.h>
 
 #include <linux/sched.h>
 #include <asm/dma.h>
@@ -781,7 +780,7 @@ static int aha1542_query(int base_io, int * transl)
 
 
 /* return non-zero on detection */
-int aha1542_detect(int hostnum)
+int aha1542_detect(Scsi_Host_Template * tpnt)
 {
     unsigned char dma_chan;
     unsigned char irq_level;
@@ -795,7 +794,7 @@ int aha1542_detect(int hostnum)
     
     for(indx = 0; indx < sizeof(bases)/sizeof(bases[0]); indx++)
 	    if(!check_region(bases[indx], 4)) { 
-		    shpnt = scsi_register(hostnum,
+		    shpnt = scsi_register(tpnt,
 					  sizeof(struct aha1542_hostdata));
 
 		    if(!aha1542_test_port(bases[indx], shpnt)) goto unregister;
@@ -901,7 +900,7 @@ int aha1542_detect(int hostnum)
 		    count++;
 		    continue;
 	    unregister:
-		    scsi_unregister(shpnt, sizeof(struct aha1542_hostdata));
+		    scsi_unregister(shpnt);
 		    continue;
 		    
 	    };
@@ -1063,18 +1062,14 @@ int aha1542_reset(Scsi_Cmnd * SCpnt)
     return SCSI_RESET_PUNT;
 }
 
-#ifdef CONFIG_BLK_DEV_SD
 #include "sd.h"
-#endif
 
-int aha1542_biosparam(int size, int dev, int * ip)
+int aha1542_biosparam(Scsi_Disk * disk, int dev, int * ip)
 {
   int translation_algorithm;
-#ifdef CONFIG_BLK_DEV_SD
-  Scsi_Device *disk;
+  int size = disk->capacity;
 
-  disk = rscsi_disks[MINOR(dev) >> 4].device;
-  translation_algorithm = HOSTDATA(disk->host)->bios_translation;
+  translation_algorithm = HOSTDATA(disk->device->host)->bios_translation;
   /* Should this be > 1024, or >= 1024?  Enquiring minds want to know. */
   if((size>>11) > 1024 && translation_algorithm == 2) {
     /* Please verify that this is the same as what DOS returns */
@@ -1087,6 +1082,5 @@ int aha1542_biosparam(int size, int dev, int * ip)
     ip[2] = size >> 11;
   };
 /*  if (ip[2] >= 1024) ip[2] = 1024; */
-#endif
   return 0;
 }

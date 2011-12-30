@@ -111,6 +111,41 @@ int unregister_blkdev(unsigned int major, const char * name)
 }
 
 /*
+ * This routine checks whether a removable media has been changed,
+ * and invalidates all buffer-cache-entries in that case. This
+ * is a relatively slow routine, so we have to try to minimize using
+ * it. Thus it is called only upon a 'mount' or 'open'. This
+ * is the best way of combining speed and utility, I think.
+ * People changing diskettes in the middle of an operation deserve
+ * to loose :-)
+ */
+int check_disk_change(dev_t dev)
+{
+	int i;
+	struct file_operations * fops;
+
+	i = MAJOR(dev);
+	if (i >= MAX_BLKDEV || (fops = blkdevs[i].fops) == NULL)
+		return 0;
+	if (fops->check_media_change == NULL)
+		return 0;
+	if (!fops->check_media_change(dev))
+		return 0;
+
+	printk("VFS: Disk change detected on device %d/%d\n",
+					MAJOR(dev), MINOR(dev));
+	for (i=0 ; i<NR_SUPER ; i++)
+		if (super_blocks[i].s_dev == dev)
+			put_super(super_blocks[i].s_dev);
+	invalidate_inodes(dev);
+	invalidate_buffers(dev);
+
+	if (fops->revalidate)
+		fops->revalidate(dev);
+	return 1;
+}
+
+/*
  * Called every time a block special file is opened
  */
 int blkdev_open(struct inode * inode, struct file * filp)

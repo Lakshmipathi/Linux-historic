@@ -1,6 +1,6 @@
 /* znet.c: An Zenith Z-Note ethernet driver for linux. */
 
-static char *version = "znet.c:v0.04 5/10/94 becker@cesdis.gsfc.nasa.gov\n";
+static char *version = "znet.c:v1.01 7/1/94 becker@cesdis.gsfc.nasa.gov\n";
 
 /*
 	Written by Donald Becker.
@@ -69,6 +69,7 @@ static char *version = "znet.c:v0.04 5/10/94 becker@cesdis.gsfc.nasa.gov\n";
 #include <linux/ptrace.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
+#include <linux/ioport.h>
 #include <asm/system.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
@@ -78,20 +79,6 @@ static char *version = "znet.c:v0.04 5/10/94 becker@cesdis.gsfc.nasa.gov\n";
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/if_arp.h>
-
-#ifndef HAVE_AUTOIRQ
-/* From auto_irq.c, in ioport.h for later versions. */
-extern void autoirq_setup(int waittime);
-extern int autoirq_report(int waittime);
-/* The map from IRQ number (as passed to the interrupt handler) to
-   'struct device'. */
-extern struct device *irq2dev_map[16];
-#endif
-
-#ifndef HAVE_ALLOC_SKB
-#define alloc_skb(size, priority) (struct sk_buff *) kmalloc(size,priority)
-#define kfree_skbmem(addr, size) kfree_s(addr,size);
-#endif
 
 #ifndef ZNET_DEBUG
 #define ZNET_DEBUG 3
@@ -202,8 +189,6 @@ static int	znet_close(struct device *dev);
 static struct enet_statistics *net_get_stats(struct device *dev);
 static void set_multicast_list(struct device *dev, int num_addrs, void *addrs);
 static void hardware_init(struct device *dev);
-static int do_command(short ioaddr, int command, int length, ushort *buffer);
-static int	wait_for_done(short ioaddr);
 static void update_stop_hit(short ioaddr, unsigned short rx_stop_offset);
 
 #ifdef notdef
@@ -228,14 +213,14 @@ int znet_probe(struct device *dev)
 
 	if (p >= (char *)0x100000) {
 		if (znet_debug > 1)
-			printk("No Z-Note ethernet adaptor found.\n");
+			printk(KERN_INFO "No Z-Note ethernet adaptor found.\n");
 		return ENODEV;
 	}
 	netinfo = (struct netidblk *)p;
 	dev->base_addr = netinfo->iobase1;
 	dev->irq = netinfo->irq1;
 
-	printk("%s: ZNET at %#3x,", dev->name, dev->base_addr);
+	printk(KERN_INFO "%s: ZNET at %#3x,", dev->name, dev->base_addr);
 
 	/* The station address is in the "netidblk" at 0x0f0000. */
 	for (i = 0; i < 6; i++)
@@ -245,17 +230,17 @@ int znet_probe(struct device *dev)
 		netinfo->dma2);
 
 	if (znet_debug > 1) {
-		printk("%s: vendor '%16.16s' IRQ1 %d IRQ2 %d DMA1 %d DMA2 %d.\n",
+		printk(KERN_INFO "%s: vendor '%16.16s' IRQ1 %d IRQ2 %d DMA1 %d DMA2 %d.\n",
 			   dev->name, netinfo->vendor,
 			   netinfo->irq1, netinfo->irq2,
 			   netinfo->dma1, netinfo->dma2);
-		printk("%s: iobase1 %#x size %d iobase2 %#x size %d net type %2.2x.\n",
+		printk(KERN_INFO "%s: iobase1 %#x size %d iobase2 %#x size %d net type %2.2x.\n",
 			   dev->name, netinfo->iobase1, netinfo->iosize1,
 			   netinfo->iobase2, netinfo->iosize2, netinfo->nettype);
 	}
 
 	if (znet_debug > 0)
-		printk(version);
+		printk("%s%s", KERN_INFO, version);
 
 	dev->priv = (void *) &zn;
 	zn.rx_dma = netinfo->dma1;
@@ -265,7 +250,7 @@ int znet_probe(struct device *dev)
 	if (request_irq(dev->irq, &znet_interrupt)
 		|| request_dma(zn.rx_dma)
 		|| request_dma(zn.tx_dma)) {
-		printk("Not opened -- resource busy?!?\n");
+		printk(KERN_WARNING "%s: Not opened -- resource busy?!?\n", dev->name);
 		return EBUSY;
 	}
 	irq2dev_map[dev->irq] = dev;
@@ -290,35 +275,10 @@ int znet_probe(struct device *dev)
 	dev->hard_start_xmit = &znet_send_packet;
 	dev->stop = &znet_close;
 	dev->get_stats	= net_get_stats;
-#ifdef HAVE_MULTICAST
 	dev->set_multicast_list = &set_multicast_list;
-#endif
 
-	/* Fill in the generic field of the device structure. */
-	for (i = 0; i < DEV_NUMBUFFS; i++)
-		dev->buffs[i] = NULL;
-
-	dev->hard_header	= eth_header;
-	dev->add_arp		= eth_add_arp;
-	dev->queue_xmit		= dev_queue_xmit;
-	dev->rebuild_header	= eth_rebuild_header;
-	dev->type_trans		= eth_type_trans;
-
-	dev->type			= ARPHRD_ETHER;
-	dev->hard_header_len = ETH_HLEN;
-	dev->mtu			= 1500; /* eth_mtu */
-	dev->addr_len		= ETH_ALEN;
-	for (i = 0; i < ETH_ALEN; i++) {
-		dev->broadcast[i]=0xff;
-	}
-
-	/* New-style flags. */
-	dev->flags			= IFF_BROADCAST;
-	dev->family			= AF_INET;
-	dev->pa_addr		= 0;
-	dev->pa_brdaddr		= 0;
-	dev->pa_mask		= 0;
-	dev->pa_alen		= sizeof(unsigned long);
+	/* Fill in the 'dev' with ethernet-generic values. */
+	ether_setup(dev);
 
 	return 0;
 }
@@ -329,7 +289,7 @@ static int znet_open(struct device *dev)
 	int ioaddr = dev->base_addr;
 
 	if (znet_debug > 2)
-		printk("%s: znet_open() called.\n", dev->name);
+		printk(KERN_DEBUG "%s: znet_open() called.\n", dev->name);
 
 	/* Turn on the 82501 SIA, using zenith-specific magic. */
 	outb(0x10, 0xe6);					/* Select LAN control register */
@@ -344,7 +304,8 @@ static int znet_open(struct device *dev)
 
 	/* This follows the packet driver's lead, and checks for success. */
 	if (inb(ioaddr) != 0x10 && inb(ioaddr) != 0x00)
-		printk("%s: Problem turning on the transceiver power.\n", dev->name);
+		printk(KERN_WARNING "%s: Problem turning on the transceiver power.\n",
+			   dev->name);
 
 	dev->tbusy = 0;
 	dev->interrupt = 0;
@@ -359,9 +320,9 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 	int ioaddr = dev->base_addr;
 
 	if (znet_debug > 4)
-		printk("%s: ZNet_send_packet(%d).\n", dev->name, dev->tbusy);
+		printk(KERN_DEBUG "%s: ZNet_send_packet(%d).\n", dev->name, dev->tbusy);
 
-	/* Transmitter timeout, could be a serious problems. */
+	/* Transmitter timeout, likely just recovery after suspending the machine. */
 	if (dev->tbusy) {
 		ushort event, tx_status, rx_offset, state;
 		int tickssofar = jiffies - dev->trans_start;
@@ -371,10 +332,10 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 		outb(CMD0_STAT1, ioaddr); tx_status = inw(ioaddr);
 		outb(CMD0_STAT2, ioaddr); rx_offset = inw(ioaddr);
 		outb(CMD0_STAT3, ioaddr); state = inb(ioaddr);
-		printk("%s: transmit timed out, status %02x %04x %04x %02x,"
+		printk(KERN_WARNING "%s: transmit timed out, status %02x %04x %04x %02x,"
 			   " resetting.\n", dev->name, event, tx_status, rx_offset, state);
 		if (tx_status == 0x0400)
-		  printk("%s: Tx carrier error, check transceiver cable.\n",
+		  printk(KERN_WARNING "%s: Tx carrier error, check transceiver cable.\n",
 				 dev->name);
 		outb(CMD0_RESET, ioaddr);
 		hardware_init(dev);
@@ -382,13 +343,6 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 
 	if (skb == NULL) {
 		dev_tint(dev);
-		return 0;
-	}
-
-	/* Fill in the ethernet header. */
-	if (!skb->arp  &&  dev->rebuild_header(skb+1, dev)) {
-		skb->dev = dev;
-		arp_queue (skb);
 		return 0;
 	}
 
@@ -402,7 +356,7 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 	/* Block a timer-based transmit from overlapping.  This could better be
 	   done with atomic_swap(1, dev->tbusy), but set_bit() works as well. */
 	if (set_bit(0, (void*)&dev->tbusy) != 0)
-		printk("%s: Transmitter access conflict.\n", dev->name);
+		printk(KERN_WARNING "%s: Transmitter access conflict.\n", dev->name);
 	else {
 		short length = ETH_ZLEN < skb->len ? skb->len : ETH_ZLEN;
 		unsigned char *buf = (void *)(skb+1);
@@ -415,7 +369,7 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 			addr |= inb(dma_port) << 8;
 			addr <<= 1;
 			if (((int)zn.tx_cur & 0x1ffff) != addr)
-			  printk("Address mismatch at Tx: %#x vs %#x.\n",
+			  printk(KERN_WARNING "Address mismatch at Tx: %#x vs %#x.\n",
 					 (int)zn.tx_cur & 0xffff, addr);
 			zn.tx_cur = (ushort *)(((int)zn.tx_cur & 0xfe0000) | addr);
 		}
@@ -442,7 +396,7 @@ static int znet_send_packet(struct sk_buff *skb, struct device *dev)
 
 		dev->trans_start = jiffies;
 		if (znet_debug > 4)
-		  printk("%s: Transmitter queued, length %d.\n", dev->name, length);
+		  printk(KERN_DEBUG "%s: Transmitter queued, length %d.\n", dev->name, length);
 	}
 	dev_kfree_skb(skb, FREE_WRITE); 
 	return 0;
@@ -457,7 +411,7 @@ static void	znet_interrupt(int reg_ptr)
 	int boguscnt = 20;
 
 	if (dev == NULL) {
-		printk ("znet_interrupt(): IRQ %d for unknown device.\n", irq);
+		printk(KERN_WARNING "znet_interrupt(): IRQ %d for unknown device.\n", irq);
 		return;
 	}
 
@@ -475,7 +429,7 @@ static void	znet_interrupt(int reg_ptr)
 			rx_ptr = inw(ioaddr);
 			outb(CMD0_STAT3, ioaddr);
 			running = inb(ioaddr);
-			printk("%s: interrupt, status %02x, %04x %04x %02x serial %d.\n",
+			printk(KERN_DEBUG "%s: interrupt, status %02x, %04x %04x %02x serial %d.\n",
 				 dev->name, status, result, rx_ptr, running, boguscnt);
 		}
 		if ((status & 0x80) == 0)
@@ -500,7 +454,7 @@ static void	znet_interrupt(int reg_ptr)
 				  lp->stats.tx_errors++;
 			}
 			dev->tbusy = 0;
-			mark_bh(INET_BH);	/* Inform upper layers. */
+			mark_bh(NET_BH);	/* Inform upper layers. */
 		}
 
 		if ((status & 0x40)
@@ -528,7 +482,7 @@ static void znet_rx(struct device *dev)
 	cur_frame_end_offset = inw(ioaddr);
 
 	if (cur_frame_end_offset == zn.rx_cur - zn.rx_start) {
-		printk("%s: Interrupted, but nothing to receive, offset %03x.\n",
+		printk(KERN_WARNING "%s: Interrupted, but nothing to receive, offset %03x.\n",
 			   dev->name, cur_frame_end_offset);
 		return;
 	}
@@ -559,7 +513,7 @@ static void znet_rx(struct device *dev)
 		count = ((hi_cnt & 0xff) << 8) + (lo_cnt & 0xff);
 
 		if (znet_debug > 5)
-		  printk("Constructing trailer at location %03x, %04x %04x %04x %04x"
+		  printk(KERN_DEBUG "Constructing trailer at location %03x, %04x %04x %04x %04x"
 				 " count %#x status %04x.\n",
 				 cur_frame_end_offset<<1, lo_status, hi_status, lo_cnt, hi_cnt,
 				 count, status);
@@ -579,7 +533,7 @@ static void znet_rx(struct device *dev)
 		int pkt_len = this_rfp_ptr[-2];
 	  
 		if (znet_debug > 5)
-		  printk("Looking at trailer ending at %04x status %04x length %03x"
+		  printk(KERN_DEBUG "Looking at trailer ending at %04x status %04x length %03x"
 				 " next %04x.\n", next_frame_end_offset<<1, status, pkt_len,
 				 this_rfp_ptr[-3]<<1);
 		/* Once again we must assume that the i82586 docs apply. */
@@ -600,7 +554,7 @@ static void znet_rx(struct device *dev)
 			skb = alloc_skb(sksize, GFP_ATOMIC);
 			if (skb == NULL) {
 				if (znet_debug)
-				  printk("%s: Memory squeeze, dropping packet.\n", dev->name);
+				  printk(KERN_WARNING "%s: Memory squeeze, dropping packet.\n", dev->name);
 				lp->stats.rx_dropped++;
 				break;
 			}
@@ -618,7 +572,7 @@ static void znet_rx(struct device *dev)
 				memcpy((unsigned char *) (skb + 1), zn.rx_cur, pkt_len);
 				if (znet_debug > 6) {
 					unsigned int *packet = (unsigned int *) (skb + 1);
-					printk("Packet data is %08x %08x %08x %08x.\n", packet[0],
+					printk(KERN_DEBUG "Packet data is %08x %08x %08x %08x.\n", packet[0],
 						   packet[1], packet[2], packet[3]);
 				}
 		  }
@@ -667,7 +621,7 @@ static int znet_close(struct device *dev)
 	free_irq(dev->irq);
 
 	if (znet_debug > 1)
-		printk("%s: Shutting down ethercard.\n", dev->name);
+		printk(KERN_DEBUG "%s: Shutting down ethercard.\n", dev->name);
 	/* Turn off transceiver power. */
 	outb(0x10, 0xe6);					/* Select LAN control register */
 	outb(inb(0xe7) & ~0x84, 0xe7);		/* Turn on LAN power (bit 2). */
@@ -734,8 +688,7 @@ void show_dma(void)
 	short dma_port = ((zn.tx_dma&3)<<2) + IO_DMA2_BASE;
 	unsigned addr = inb(dma_port);
 	addr |= inb(dma_port) << 8;
-	printk("Addr: %04x cnt:%3x...", addr<<1,
-		   get_dma_residue(zn.tx_dma));
+	printk("Addr: %04x cnt:%3x...", addr<<1, get_dma_residue(zn.tx_dma));
 }
 
 /* Initialize the hardware.  We have to do this when the board is open()ed
@@ -767,7 +720,7 @@ static void hardware_init(struct device *dev)
 	} sti();
 
 	if (znet_debug > 1)
-	  printk("%s: Initializing the i82593, tx buf %p... ", dev->name,
+	  printk(KERN_DEBUG "%s: Initializing the i82593, tx buf %p... ", dev->name,
 			 zn.tx_start);
 	/* Do an empty configure command, just like the Crynwr driver.  This
 	   resets to chip to its default values. */
@@ -793,144 +746,11 @@ static void hardware_init(struct device *dev)
 	dev->tbusy = 0;
 }
 
-#ifdef notdef
-foo()
-{
-	/*do_command(ioaddr, CMD0_CONFIGURE+CMD0_CHNL_1, sizeof(i593_init) + 2,
-			   zn.tx_buffer);*/
-	/*do_command(ioaddr, CMD0_CONFIGURE+CMD0_CHNL_1, 32, zn.tx_buffer);*/
-	/*outb(CMD0_CONFIGURE+CMD0_CHNL_1, ioaddr);*/
-
-	if (znet_debug > 1)  printk("Set Address... ");
-	*zn.tx_cur++ = 6;
-	memcpy(zn.tx_cur, dev->dev_addr, 6);
-	zn.tx_cur += 3;
-	outb(CMD0_IA_SETUP + CMD0_CHNL_1, ioaddr);
-	{
-		unsigned stop_time = jiffies + 3; 
-		while (jiffies < stop_time);
-	}
-	if (znet_debug > 2) {
-		short dma_port = ((zn.tx_dma&3)<<2) + IO_DMA2_BASE;
-		unsigned addr = inb(dma_port);
-		addr |= inb(dma_port) << 8;
-		printk("Terminal addr is %04x, cnt. %03x...", addr<<1,
-			   get_dma_residue(zn.tx_dma));
-	}
-	*zn.tx_cur++ = 6;
-	memcpy(zn.tx_cur, dev->dev_addr, 6);
-	zn.tx_cur += 3;
-	outb(CMD0_IA_SETUP + CMD0_CHNL_1, ioaddr);
-	{
-		unsigned stop_time = jiffies + 2; 
-		while (jiffies < stop_time);
-	}
-	if (znet_debug > 2) {
-		short dma_port = ((zn.tx_dma&3)<<2) + IO_DMA2_BASE;
-		unsigned addr = inb(dma_port);
-		addr |= inb(dma_port) << 8;
-		printk("Terminal addr is %04x, cnt. %03x...", addr<<1,
-			   get_dma_residue(zn.tx_dma));
-	}
-	wait_for_done(ioaddr);
-
-	if (znet_debug > 1)  printk("Set Mode... ");
-	set_multicast_list(dev, 0, 0);
-	{
-		unsigned stop_time = jiffies + 3; 
-		while (jiffies < stop_time);
-	}
-	if (znet_debug > 2) {
-		short dma_port = ((zn.tx_dma&3)<<2) + IO_DMA2_BASE;
-		unsigned addr = inb(dma_port);
-		addr |= inb(dma_port) << 8;
-		printk("Terminal addr is %04x, cnt. %03x...", addr<<1,
-			   get_dma_residue(zn.tx_dma));
-	}
-	if (znet_debug > 2) {
-		int i;
-		outb(CMD0_DUMP+CMD0_CHNL_0, ioaddr);
-		printk("Dumping state:");
-		for (i = 0; i < 16; i++)
-			printk(" %04x", *zn.rx_cur++);
-		printk("\n             :");
-		for (;i < 32; i++)
-			printk(" %04x", *zn.rx_cur++);
-		printk("\n");
-		wait_for_done(ioaddr);
-	}
-}
-
-static int do_command(short ioaddr, int command, int length, ushort *buffer)
-{
-	/* This isn't needed, but is here for safety. */
-	outb(CMD0_NOP+CMD0_STAT3,ioaddr);
-	if (inb(ioaddr) & 3)
-	  printk("znet: do_command() while the i82593 is busy.\n");
-
-	cli();
-	disable_dma(zn.tx_dma);
-	clear_dma_ff(zn.tx_dma);
-	set_dma_mode(zn.tx_dma,DMA_MODE_WRITE);
-	set_dma_addr(zn.tx_dma,(unsigned int) zn.tx_start);
-	set_dma_count(zn.tx_dma,length);
-	sti();
-	enable_dma(zn.tx_dma);
-	outb(command, ioaddr);
-	return 0;
-}
-
-/* wait_for_done - this is a blatent rip-off of the wait_for_done routine
- ** from the Crynwr packet driver.	It does not work correctly - doesn't
- ** acknowledge the interrupts it gets or something.  It does determine
- ** when the command is done, or if there are none executing, though...
- **		-Mike
- */
-static int wait_for_done(short ioaddr)
-{
-  unsigned int stat;
-  unsigned stop_time = jiffies + 10;
-  int ticks = 0;
-
-  /* check to see if we are busy */
-  outb(CMD0_NOP+CMD0_STAT3,ioaddr);
-  stat = inb(ioaddr);
-
-  /* check if busy */
-  if ((stat&3)==0) {
-	if (znet_debug > 5)
-	  printk("wait_for_done(): Not busy, status %02x.\n", stat);
-	return 0;
-  }
-
-  while (jiffies < stop_time) {
-	  /* now check */
-	  outb(CMD0_NOP+CMD0_STAT3,ioaddr);
-	  stat = inb(ioaddr);
-	  if ((stat&3)==0) {
-		  if (znet_debug > 5)
-			printk("Command completed after %d ticks status %02x.\n",
-				   ticks, stat);
-		  outb((CMD0_NOP|CMD0_ACK),ioaddr);
-		  return 0;
-	  }
-	  ticks++;
-  }
-  outb(CMD0_ABORT, ioaddr);
-  if (znet_debug)
-	printk("wait_for_done: command not ACK'd, status %02x after abort %02x.\n",
-		   stat, inb(ioaddr));
-
-  /* should re-initialize here... */
-  return 1;
-}
-#endif /* notdef */
-
 static void update_stop_hit(short ioaddr, unsigned short rx_stop_offset)
 {
 	outb(CMD0_PORT_1, ioaddr);
 	if (znet_debug > 5)
-	  printk("Updating stop hit with value %02x.\n",
+	  printk(KERN_DEBUG "Updating stop hit with value %02x.\n",
 			 (rx_stop_offset >> 6) | 0x80);
 	outb((rx_stop_offset >> 6) | 0x80, ioaddr);
 	outb(CMD1_PORT_0, ioaddr);

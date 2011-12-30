@@ -21,6 +21,8 @@
  *		Alan Cox	:	Routing errors
  *		Alan Cox	:	Changes for newer routing code
  *		Alan Cox	:	Removed old debugging junk
+ *		Alan Cox	:	Fixed the ICMP error status of net/host unreachable
+ *	Gerhard Koerting	:	Fixed broadcast ping properly
  *
  * 
  *
@@ -65,8 +67,8 @@ struct icmp_mib	icmp_statistics={0,};
 
 /* An array of errno for error messages from dest unreach. */
 struct icmp_err icmp_err_convert[] = {
-  { ENETUNREACH,	1 },	/*	ICMP_NET_UNREACH	*/
-  { EHOSTUNREACH,	1 },	/*	ICMP_HOST_UNREACH	*/
+  { ENETUNREACH,	0 },	/*	ICMP_NET_UNREACH	*/
+  { EHOSTUNREACH,	0 },	/*	ICMP_HOST_UNREACH	*/
   { ENOPROTOOPT,	1 },	/*	ICMP_PROT_UNREACH	*/
   { ECONNREFUSED,	1 },	/*	ICMP_PORT_UNREACH	*/
   { EOPNOTSUPP,		0 },	/*	ICMP_FRAG_NEEDED	*/
@@ -586,12 +588,6 @@ int icmp_rcv(struct sk_buff *skb1, struct device *dev, struct options *opt,
 	
 	icmp_statistics.IcmpInMsgs++;
 	 
-	if (ip_chk_addr(daddr) == IS_BROADCAST) 
-	{
-		icmp_statistics.IcmpInErrors++;
-		kfree_skb(skb1, FREE_READ);
-		return(0);
-  	}
   	
   	/*
   	 *	Grab the packet as an icmp object
@@ -616,6 +612,17 @@ int icmp_rcv(struct sk_buff *skb1, struct device *dev, struct options *opt,
 	/*
 	 *	Parse the ICMP message 
 	 */
+
+	if (ip_chk_addr(daddr) == IS_BROADCAST)
+	{
+		if (icmph->type != ICMP_ECHO) 
+		{
+			icmp_statistics.IcmpInErrors++;
+			kfree_skb(skb1, FREE_READ);
+			return(0);
+  		}
+		daddr=dev->pa_addr;
+	}
 
 	switch(icmph->type) 
 	{

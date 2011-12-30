@@ -7,7 +7,7 @@
 	incorporated herein by reference.
 
 	The author may be reached as becker@cesdis.gsfc.nasa.gov, or
-	C/O Supercomputing Research Ctr., 17100 Science Dr., Bowie MD 20715
+    C/O Code 930.5, Goddard Space Flight Center, Greenbelt MD 20771
 
 	This is driver for the Ansel Communications Model 3200 EISA Ethernet LAN
 	Adapter.  The programming information is from the users manual, as related
@@ -15,7 +15,7 @@
   */
 
 static char *version =
-	"ac3200.c:v0.03 2/6/94 Donald Becker (becker@super.org)\n";
+	"ac3200.c:v1.01 7/1/94 Donald Becker (becker@cesdis.gsfc.nasa.gov)\n";
 
 #include <linux/config.h>
 #include <linux/kernel.h>
@@ -171,7 +171,7 @@ static int ac_probe1(int ioaddr, struct device *dev)
 	ei_status.stop_page = AC_STOP_PG;
 	ei_status.word16 = 1;
 
-	printk("\n%s: AC3200 at %#x, IRQ %d, %s port, shared memory at %#x-%#x.\n",
+	printk("\n%s: AC3200 at %#x, IRQ %d, %s port, shared memory %#lx-%#lx.\n",
 		   dev->name, ioaddr, dev->irq, port_name[dev->if_port],
 		   dev->mem_start, dev->mem_end-1);
 
@@ -206,7 +206,7 @@ static void ac_reset_8390(struct device *dev)
 	ushort ioaddr = dev->base_addr;
 
 	outb(AC_RESET, ioaddr + AC_RESET_PORT);
-	if (ei_debug > 1) printk("resetting AC3200, t=%d...", jiffies);
+	if (ei_debug > 1) printk("resetting AC3200, t=%ld...", jiffies);
 
 	ei_status.txing = 0;
 	outb(AC_ENABLE, ioaddr + AC_RESET_PORT);

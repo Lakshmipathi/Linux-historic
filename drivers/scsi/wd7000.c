@@ -115,6 +115,7 @@
 #include "../block/blk.h"
 #include "scsi.h"
 #include "hosts.h"
+#include "sd.h"
 
 #define ANY2SCSI_INLINE    /* undef this to use old macros */
 #undef DEBUG
@@ -155,7 +156,6 @@ typedef volatile struct mailbox{
  *
  */
 typedef struct adapter {
-  int num;                          /* Index into Scsi_hosts array */
   struct Scsi_Host *sh;             /* Pointer to Scsi_Host structure */
   int iobase;                       /* This adapter's I/O base address */
   int irq;                          /* This adapter's IRQ level */
@@ -1089,7 +1089,7 @@ void wd7000_revision(Adapter *host)
 }
 
 
-int wd7000_detect(int hostnum)
+int wd7000_detect(Scsi_Host_Template * tpnt)
 /* 
  *  Returns the number of adapters this driver is supporting.
  *
@@ -1136,21 +1136,21 @@ int wd7000_detect(int hostnum)
 		 *  Scsi_Host structure (sh), and is located by the empty
 		 *  array hostdata.
 		 */
-		sh = scsi_register( hostnum, sizeof(Adapter) );
+		sh = scsi_register(tpnt, sizeof(Adapter) );
 		host = (Adapter *) sh->hostdata;
 #ifdef DEBUG
 		printk("wd7000_detect: adapter allocated at %06x\n",
 		       (int)host);
 #endif
 		memset( host, 0, sizeof(Adapter) );
-	        host->num = hostnum;  host->sh = sh;
+	        host->sh = sh;
 		host->irq = cfg->irq;
 		host->iobase = cfg->iobase;
 		host->dma = cfg->dma;
 		irq2host[host->irq] = host;
 
 		if (!wd7000_init(host))  {  /* Initialization failed */
-		    scsi_unregister( sh, sizeof(Adapter) );
+		    scsi_unregister (sh);
 		    continue;
 		}
 
@@ -1225,8 +1225,9 @@ const char *wd7000_info(void)
  *  this way, so I think it will work OK.  Someone who is ambitious can
  *  borrow a newer or more complete version from another driver.
  */
-int wd7000_biosparam(int size, int dev, int* ip)
+int wd7000_biosparam(Disk * disk, int dev, int* ip)
 {
+  int size = disk->capacity;
   ip[0] = 64;
   ip[1] = 32;
   ip[2] = size >> 11;

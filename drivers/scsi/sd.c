@@ -42,7 +42,7 @@ static const char RCSid[] = "$Header:";
 #define SD_MOD_TIMEOUT 750
 
 #define CLUSTERABLE_DEVICE(SC) (SC->host->hostt->use_clustering && \
-			    scsi_devices[SC->index].type != TYPE_MOD)
+			    SC->device->type != TYPE_MOD)
 
 struct hd_struct * sd;
 
@@ -53,6 +53,9 @@ static int * sd_sizes;
 static int * sd_blocksizes;
 
 extern int sd_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
+
+static int check_scsidisk_media_change(dev_t);
+static int fop_revalidate_scsidisk(dev_t);
 
 static sd_init_onedisk(int);
 
@@ -108,7 +111,10 @@ static struct file_operations sd_fops = {
 	NULL,			/* mmap */
 	sd_open,		/* open code */
 	sd_release,		/* release */
-	block_fsync		/* fsync */
+	block_fsync,		/* fsync */
+	NULL,			/* fasync */
+	check_scsidisk_media_change,  /* Disk change */
+	fop_revalidate_scsidisk     /* revalidate */
 };
 
 static struct gendisk sd_gendisk = {
@@ -341,7 +347,7 @@ static void do_sd_request (void)
 
     if (flag++ == 0)
       SCpnt = allocate_device(&CURRENT,
-			      rscsi_disks[DEVICE_NR(MINOR(CURRENT->dev))].device->index, 0); 
+			      rscsi_disks[DEVICE_NR(MINOR(CURRENT->dev))].device, 0); 
     else SCpnt = NULL;
     sti();
 
@@ -359,7 +365,7 @@ static void do_sd_request (void)
       req = CURRENT;
       while(req){
 	SCpnt = request_queueable(req,
-				  rscsi_disks[DEVICE_NR(MINOR(req->dev))].device->index);
+				  rscsi_disks[DEVICE_NR(MINOR(req->dev))].device);
 	if(SCpnt) break;
 	req1 = req;
 	req = req->next;
@@ -728,15 +734,16 @@ repeat:
 	scsi_do_cmd (SCpnt, (void *) cmd, buff, 
 		     this_count * rscsi_disks[dev].sector_size,
 		     rw_intr, 
-		     (scsi_devices[SCpnt->index].type == TYPE_DISK ? 
+		     (SCpnt->device->type == TYPE_DISK ? 
 		                     SD_TIMEOUT : SD_MOD_TIMEOUT),
 		     MAX_RETRIES);
 }
 
-int check_scsidisk_media_change(int full_dev, int flag){
+static int check_scsidisk_media_change(dev_t full_dev){
         int retval;
 	int target;
 	struct inode inode;
+	int flag = 0;
 
 	target =  DEVICE_NR(MINOR(full_dev));
 
@@ -794,7 +801,7 @@ static int sd_init_onedisk(int i)
      a fatal error, and many devices report such an error just after a scsi
      bus reset. */
 
-  SCpnt = allocate_device(NULL, rscsi_disks[i].device->index, 1);
+  SCpnt = allocate_device(NULL, rscsi_disks[i].device, 1);
   buffer = (unsigned char *) scsi_malloc(512);
 
   spintime = 0;
@@ -845,7 +852,7 @@ static int sd_init_onedisk(int i)
 	};
 
 	time1 = jiffies;
-	while(jiffies < time1 + 100); /* Wait 1 second for next try */
+	while(jiffies < time1 + HZ); /* Wait 1 second for next try */
 	printk( "." );
       };
     } while(the_result && spintime && spintime+5000 > jiffies);
@@ -889,7 +896,7 @@ static int sd_init_onedisk(int i)
 
   SCpnt->request.dev = -1;  /* Mark as not busy */
 
-  wake_up(&scsi_devices[SCpnt->index].device_wait); 
+  wake_up(&SCpnt->device->device_wait); 
 
   /* Wake up a process waiting for device*/
 
@@ -1024,10 +1031,8 @@ unsigned long sd_init(unsigned long memory_start, unsigned long memory_end)
 	return memory_start;
 }
 
-unsigned long sd_init1(unsigned long mem_start, unsigned long mem_end){
-  rscsi_disks = (Scsi_Disk *) mem_start;
-  mem_start += MAX_SD * sizeof(Scsi_Disk);
-  return mem_start;
+void sd_init1(){
+  rscsi_disks = (Scsi_Disk *) scsi_init_malloc(MAX_SD * sizeof(Scsi_Disk));
 };
 
 void sd_attach(Scsi_Device * SDp){
@@ -1089,5 +1094,9 @@ int revalidate_scsidisk(int dev, int maxusage){
 
 	  DEVICE_BUSY = 0;
 	  return 0;
+}
+
+static int fop_revalidate_scsidisk(dev_t dev){
+  return revalidate_scsidisk(dev, 0);
 }
 

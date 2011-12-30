@@ -45,6 +45,7 @@ static void get_sectorsize(int);
 extern int sr_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
 
 void requeue_sr_request (Scsi_Cmnd * SCpnt);
+static int check_cdrom_media_change(dev_t);
 
 static void sr_release(struct inode * inode, struct file * file)
 {
@@ -62,9 +63,12 @@ static struct file_operations sr_fops =
 	NULL,			/* select */
 	sr_ioctl,		/* ioctl */
 	NULL,			/* mmap */
-	sr_open,       		/* no special open code */
+	sr_open,       		/* special open code */
 	sr_release,		/* release */
-	NULL			/* fsync */
+	NULL,			/* fsync */
+	NULL,			/* fasync */
+	check_cdrom_media_change,  /* Disk change */
+	NULL			/* revalidate */
 };
 
 /*
@@ -77,9 +81,10 @@ static struct file_operations sr_fops =
  * an inode for that to work, and we do not always have one.
  */
 
-int check_cdrom_media_change(int full_dev, int flag){
+int check_cdrom_media_change(dev_t full_dev){
 	int retval, target;
 	struct inode inode;
+	int flag = 0;
 
 	target =  MINOR(full_dev);
 
@@ -302,7 +307,7 @@ static void do_sr_request (void)
 
     if (flag++ == 0)
       SCpnt = allocate_device(&CURRENT,
-			      scsi_CDs[DEVICE_NR(MINOR(CURRENT->dev))].device->index, 0); 
+			      scsi_CDs[DEVICE_NR(MINOR(CURRENT->dev))].device, 0); 
     else SCpnt = NULL;
     sti();
 
@@ -320,7 +325,7 @@ static void do_sr_request (void)
       req = CURRENT;
       while(req){
 	SCpnt = request_queueable(req,
-				  scsi_CDs[DEVICE_NR(MINOR(req->dev))].device->index);
+				  scsi_CDs[DEVICE_NR(MINOR(req->dev))].device);
 	if(SCpnt) break;
 	req1 = req;
 	req = req->next;
@@ -618,10 +623,8 @@ are any multiple of 512 bytes long.  */
 		     rw_intr, SR_TIMEOUT, MAX_RETRIES);
 }
 
-unsigned long sr_init1(unsigned long mem_start, unsigned long mem_end){
-  scsi_CDs = (Scsi_CD *) mem_start;
-  mem_start += MAX_SR * sizeof(Scsi_CD);
-  return mem_start;
+void sr_init1(){
+  scsi_CDs = (Scsi_CD *) scsi_init_malloc(MAX_SR * sizeof(Scsi_CD));
 };
 
 void sr_attach(Scsi_Device * SDp){
@@ -652,7 +655,7 @@ static void get_sectorsize(int i){
   int the_result, retries;
   Scsi_Cmnd * SCpnt;
   
-  SCpnt = allocate_device(NULL, scsi_CDs[i].device->index, 1);
+  SCpnt = allocate_device(NULL, scsi_CDs[i].device, 1);
 
   retries = 3;
   do {
@@ -684,7 +687,7 @@ static void get_sectorsize(int i){
   
   SCpnt->request.dev = -1;  /* Mark as not busy */
   
-  wake_up(&scsi_devices[SCpnt->index].device_wait); 
+  wake_up(&SCpnt->device->device_wait); 
 
   if (the_result) {
     scsi_CDs[i].capacity = 0x1fffff;

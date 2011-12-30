@@ -14,10 +14,13 @@
 /*
  * some fix numbers
  */
-#define CD_MINS                   75  /* minutes per CD                  */
+#define CD_MINS                   74  /* max. minutes per CD             */
 #define CD_SECS                   60  /* seconds per minute              */
 #define CD_FRAMES                 75  /* frames per second               */
+#define CD_CHUNK_SIZE             24  /* lowest-level "data bytes piece" */
+#define CD_NUM_OF_CHUNKS          98  /* chunks per frame                */
 #define CD_FRAMESIZE            2048  /* bytes per frame, cooked mode    */
+#define CD_FRAMESIZE_RAW0       2336  /* bytes per frame, "raw" mode     */
 #define CD_FRAMESIZE_XA         2340  /* bytes per frame, "xa" mode      */
 #define CD_FRAMESIZE_RAW        2352  /* bytes per frame, "raw" mode     */
 #define CD_FRAMESIZE_SUB          96  /* subchannel data size            */
@@ -238,9 +241,8 @@ struct cdrom_tocentry
 /*
  * CD-ROM address types (cdrom_tocentry.cdte_format)
  */
-
-#define	CDROM_LBA	0x01
-#define	CDROM_MSF	0x02
+#define	CDROM_LBA 0x01 /* "logical block": first frame is #0 */
+#define	CDROM_MSF 0x02 /* "minute-second-frame": binary, not bcd here! */
 
 /*
  * bit to tell whether track is data or audio
@@ -328,7 +330,7 @@ struct cdrom_read_audio
 	      int	lba;
 	    } addr; /* frame address */
 	  u_char addr_format; /* CDROM_LBA or CDROM_MSF */
-	  int nframes; /* number of 2352-byte-frames to read at once, currently only 1 allowed */
+	  int nframes; /* number of 2352-byte-frames to read at once, limited by the drivers */
 	  u_char *buf; /* frame buffer (size: nframes*2352 bytes) */
 	};
 
@@ -366,7 +368,7 @@ struct cdrom_read_audio
                                                 /* vlume control		*/
 
 #define	CDROMSUBCHNL		0x530b		/* (struct cdrom_subchnl)	*/
-                                                /* read sub-channel data 	*/
+                                                /* read Q sub-channel data 	*/
 
 #define	CDROMREADMODE2		0x530c		/* (struct cdrom_read)		*/
                                                 /* read type-2 data (not suppt)	*/
