@@ -47,7 +47,7 @@ struct desc_struct default_ldt;
 static inline _syscall0(int,idle)
 static inline _syscall0(int,fork)
 static inline _syscall0(int,pause)
-static inline _syscall1(int,setup,void *,BIOS)
+static inline _syscall0(int,setup)
 static inline _syscall0(int,sync)
 static inline _syscall0(pid_t,setsid)
 static inline _syscall3(int,write,int,fd,const char *,buf,off_t,count)
@@ -84,6 +84,7 @@ extern void bmouse_setup(char *str, int *ints);
 extern void eth_setup(char *str, int *ints);
 extern void xd_setup(char *str, int *ints);
 extern void mcd_setup(char *str, int *ints);
+extern void st_setup(char *str, int *ints);
 extern void st0x_setup(char *str, int *ints);
 extern void tmc8xx_setup(char *str, int *ints);
 extern void t128_setup(char *str, int *ints);
@@ -175,6 +176,9 @@ struct {
 #endif
 #ifdef CONFIG_BLK_DEV_HD
 	{ "hd=", hd_setup },
+#endif
+#ifdef CONFIG_CHR_DEV_ST
+	{ "st=", st_setup },
 #endif
 #ifdef CONFIG_BUSMOUSE
 	{ "bmouse=", bmouse_setup },
@@ -488,7 +492,7 @@ void init(void)
 {
 	int pid,i;
 
-	setup((void *) &drive_info);
+	setup();
 	sprintf(term, "TERM=con%dx%d", ORIG_VIDEO_COLS, ORIG_VIDEO_LINES);
 	(void) open("/dev/tty1",O_RDWR,0);
 	(void) dup(0);

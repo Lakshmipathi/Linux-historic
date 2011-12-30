@@ -264,17 +264,6 @@ static inline int try_to_swap_out(unsigned long * table_ptr)
 }
 
 /*
- * sys_idle() does nothing much: it just searches for likely candidates for
- * swapping out or forgetting about. This speeds up the search when we
- * actually have to swap.
- */
-asmlinkage int sys_idle(void)
-{
-	need_resched = 1;
-	return 0;
-}
-
-/*
  * A new implementation of swap_out().  We do not swap complete processes,
  * but only a small number of blocks, before we continue with the next
  * process.  The number of blocks actually swapped is determined on the
@@ -328,7 +317,7 @@ static int swap_out(unsigned int priority)
 	    }
 
 	    p = task[swap_task];
-	    if(p && p->swappable && p->rss)
+	    if(p && p->mm->swappable && p->mm->rss)
 		break;
 
 	    swap_task++;
@@ -337,23 +326,23 @@ static int swap_out(unsigned int priority)
 	/*
 	 * Determine the number of pages to swap from this process.
 	 */
-	if(! p -> swap_cnt) {
-	    p->dec_flt = (p->dec_flt * 3) / 4 + p->maj_flt - p->old_maj_flt;
-	    p->old_maj_flt = p->maj_flt;
+	if(! p->mm->swap_cnt) {
+	    p->mm->dec_flt = (p->mm->dec_flt * 3) / 4 + p->mm->maj_flt - p->mm->old_maj_flt;
+	    p->mm->old_maj_flt = p->mm->maj_flt;
 
-	    if(p->dec_flt >= SWAP_RATIO / SWAP_MIN) {
-		p->dec_flt = SWAP_RATIO / SWAP_MIN;
-		p->swap_cnt = SWAP_MIN;
-	    } else if(p->dec_flt <= SWAP_RATIO / SWAP_MAX)
-		p->swap_cnt = SWAP_MAX;
+	    if(p->mm->dec_flt >= SWAP_RATIO / SWAP_MIN) {
+		p->mm->dec_flt = SWAP_RATIO / SWAP_MIN;
+		p->mm->swap_cnt = SWAP_MIN;
+	    } else if(p->mm->dec_flt <= SWAP_RATIO / SWAP_MAX)
+		p->mm->swap_cnt = SWAP_MAX;
 	    else
-		p->swap_cnt = SWAP_RATIO / p->dec_flt;
+		p->mm->swap_cnt = SWAP_RATIO / p->mm->dec_flt;
 	}
 
 	/*
 	 * Go through process' page directory.
 	 */
-	for(table = p->swap_table; table < 1024; table++) {
+	for(table = p->mm->swap_table; table < 1024; table++) {
 	    pg_table = ((unsigned long *) p->tss.cr3)[table];
 	    if(pg_table >= high_memory)
 		    continue;
@@ -370,34 +359,34 @@ static int swap_out(unsigned int priority)
 	    /*
 	     * Go through this page table.
 	     */
-	    for(page = p->swap_page; page < 1024; page++) {
+	    for(page = p->mm->swap_page; page < 1024; page++) {
 		switch(try_to_swap_out(page + (unsigned long *) pg_table)) {
 		    case 0:
 			break;
 
 		    case 1:
-			p->rss--;
+			p->mm->rss--;
 			/* continue with the following page the next time */
-			p->swap_table = table;
-			p->swap_page  = page + 1;
-			if((--p->swap_cnt) == 0)
+			p->mm->swap_table = table;
+			p->mm->swap_page  = page + 1;
+			if((--p->mm->swap_cnt) == 0)
 			    swap_task++;
 			return 1;
 
 		    default:
-			p->rss--;
+			p->mm->rss--;
 			break;
 		}
 	    }
 
-	    p->swap_page = 0;
+	    p->mm->swap_page = 0;
 	}
 
 	/*
 	 * Finish work with this process, if we reached the end of the page
 	 * directory.  Mark restart from the beginning the next time.
 	 */
-	p->swap_table = 0;
+	p->mm->swap_table = 0;
     }
     return 0;
 }
@@ -430,7 +419,7 @@ check_task:
 		goto check_task;
 	}
 	p = task[swap_task];
-	if (!p || !p->swappable) {
+	if (!p || !p->mm->swappable) {
 		swap_task++;
 		goto check_task;
 	}
@@ -461,8 +450,8 @@ check_table:
 	}
 	switch (try_to_swap_out(swap_page + (unsigned long *) pg_table)) {
 		case 0: break;
-		case 1: p->rss--; return 1;
-		default: p->rss--;
+		case 1: p->mm->rss--; return 1;
+		default: p->mm->rss--;
 	}
 	swap_page++;
 	goto check_table;
@@ -470,12 +459,12 @@ check_table:
 
 #endif
 
-static int try_to_free_page(void)
+static int try_to_free_page(int priority)
 {
 	int i=6;
 
 	while (i--) {
-		if (shrink_buffers(i))
+	        if (priority != GFP_NOBUFFER && shrink_buffers(i))
 			return 1;
 		if (shm_swap(i))
 			return 1;
@@ -545,6 +534,17 @@ void free_pages(unsigned long addr, unsigned long order)
 				if (!--*map)
 					free_pages_ok(addr, order);
 				restore_flags(flag);
+				if(*map == 1) {
+				  int j;
+				  struct buffer_head * bh, *tmp;
+
+				  bh = buffer_pages[MAP_NR(addr)];
+				  if(bh)
+				    for(j = 0, tmp = bh; tmp && (!j || tmp != bh); 
+					tmp = tmp->b_this_page, j++)
+				      if(tmp->b_list == BUF_SHARED && tmp->b_dev != 0xffff)
+					refile_buffer(tmp);
+				}
 			}
 			return;
 		}
@@ -585,7 +585,7 @@ do { unsigned long size = PAGE_SIZE << high; \
 		add_mem_queue(free_area_list+high, addr); \
 		mark_used((unsigned long) addr, high); \
 		restore_flags(flags); \
-		addr = (void *) (size + (unsigned long) addr); \
+		addr = (struct mem_list *) (size + (unsigned long) addr); \
 	} mem_map[MAP_NR((unsigned long) addr)] = 1; \
 } while (0)
 
@@ -610,7 +610,7 @@ repeat:
 		return 0;
 	}
 	restore_flags(flags);
-        if (priority != GFP_BUFFER && try_to_free_page())
+        if (priority != GFP_BUFFER && try_to_free_page(priority))
 		goto repeat;
 	return 0;
 }
@@ -689,7 +689,7 @@ repeat:
 				read_swap_page(page, (char *) tmp);
 				if (*ppage == page) {
 					*ppage = tmp | (PAGE_DIRTY | PAGE_PRIVATE);
-					++p->rss;
+					++p->mm->rss;
 					swap_free(page);
 					tmp = 0;
 				}
@@ -884,4 +884,35 @@ void si_swapinfo(struct sysinfo *val)
 	val->freeswap <<= PAGE_SHIFT;
 	val->totalswap <<= PAGE_SHIFT;
 	return;
+}
+
+/*
+ * set up the free-area data structures:
+ *   - mark all pages MAP_PAGE_RESERVED
+ *   - mark all memory queues empty
+ *   - clear the memory bitmaps
+ */
+unsigned long free_area_init(unsigned long start_mem, unsigned long end_mem)
+{
+	unsigned short * p;
+	unsigned long mask = PAGE_MASK;
+	int i;
+
+	mem_map = (unsigned short *) start_mem;
+	p = mem_map + MAP_NR(end_mem);
+	start_mem = (unsigned long) p;
+	while (p > mem_map)
+		*--p = MAP_PAGE_RESERVED;
+
+	for (i = 0 ; i < NR_MEM_LISTS ; i++, mask <<= 1) {
+		unsigned long bitmap_size;
+		free_area_list[i].prev = free_area_list[i].next = &free_area_list[i];
+		end_mem = (end_mem + ~mask) & mask;
+		bitmap_size = end_mem >> (PAGE_SHIFT + i);
+		bitmap_size = (bitmap_size + 7) >> 3;
+		free_area_map[i] = (unsigned char *) start_mem;
+		memset((void *) start_mem, 0, bitmap_size);
+		start_mem += bitmap_size;
+	}
+	return start_mem;
 }

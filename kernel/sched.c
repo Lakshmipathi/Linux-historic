@@ -24,6 +24,7 @@
 #include <linux/segment.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <linux/tqueue.h>
 
 #include <asm/system.h>
 #include <asm/io.h>
@@ -39,6 +40,8 @@
 long tick = 1000000 / HZ;               /* timer interrupt period */
 volatile struct timeval xtime;		/* The current time */
 int tickadj = 500/HZ;			/* microsecs */
+
+DECLARE_TASK_QUEUE(tq_timer);
 
 /*
  * phase-lock loop variables
@@ -222,7 +225,7 @@ confuse_gcc1:
 		++current->counter;
 	}
 #endif
-	c = -1;
+	c = -1000;
 	next = p = &init_task;
 	for (;;) {
 		if ((p = p->next_task) == &init_task)
@@ -235,8 +238,9 @@ confuse_gcc2:
 		for_each_task(p)
 			p->counter = (p->counter >> 1) + p->priority;
 	}
-	if(current != next)
-		kstat.context_swtch++;
+	if (current == next)
+		return;
+	kstat.context_swtch++;
 	switch_to(next);
 	/* Now maybe reload the debug registers */
 	if(current->debugreg[7]){
@@ -547,6 +551,11 @@ static void timer_bh(void * unused)
 	}
 }
 
+void tqueue_bh(void * unused)
+{
+	run_task_queue(&tq_timer);
+}
+
 /*
  * The int argument is really a (struct pt_regs *), in case the
  * interrupt wants to know from where it was called. The timer
@@ -634,8 +643,8 @@ static void do_timer(struct pt_regs * regs)
 		}
 #endif
 	}
-	if (current == task[0] || (--current->counter)<=0) {
-		current->counter=0;
+	if (current != task[0] && 0 > --current->counter) {
+		current->counter = 0;
 		need_resched = 1;
 	}
 	/* Update ITIMER_PROF for the current task */
@@ -666,6 +675,8 @@ static void do_timer(struct pt_regs * regs)
 			mark_bh(TIMER_BH);
 		}
 	}
+	if (tq_timer != &tq_last)
+		mark_bh(TQUEUE_BH);
 	sti();
 }
 
@@ -775,6 +786,7 @@ void sched_init(void)
 	struct desc_struct * p;
 
 	bh_base[TIMER_BH].routine = timer_bh;
+	bh_base[TQUEUE_BH].routine = tqueue_bh;
 	if (sizeof(struct sigaction) != 16)
 		panic("Struct sigaction MUST be 16 bytes");
 	set_tss_desc(gdt+FIRST_TSS_ENTRY,&init_task.tss);
