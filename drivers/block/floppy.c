@@ -68,6 +68,10 @@
  * minor modifications to allow 2.88 floppies to be run. 
  */
 
+/* 1994/7/13 -- Paul Vojta -- modified the probing code to allow three or more
+ * disk types.
+ */
+
 
 #define REALLY_SLOW_IO
 #define FLOPPY_IRQ 6
@@ -93,7 +97,7 @@
 #define MAJOR_NR FLOPPY_MAJOR
 #include "blk.h"
 
-static unsigned int changed_floppies = 0, fake_change = 0;
+static unsigned int changed_floppies = 0, fake_change = 0, read_only = 0;
 
 static int initial_reset_flag = 0;
 static int need_configure = 1;		/* for 82077 */
@@ -146,7 +150,7 @@ static unsigned char reply_buffer[MAX_REPLIES];
 #define ST0 (reply_buffer[0])
 #define ST1 (reply_buffer[1])
 #define ST2 (reply_buffer[2])
-#define ST3 (reply_buffer[3])
+#define ST3 (reply_buffer[0]) /* result of GETSTATUS */
 
 /*
  * This struct defines the different floppy types.
@@ -165,34 +169,68 @@ static struct floppy_struct floppy_type[] = {
 	{ 1440, 9,2,80,0,0x23,0x01,0xDF,0x50,NULL },	/* 720kB in 1.2MB drive */
 	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,NULL },	/* 1.44MB diskette */
 	{ 5760,36,2,80,0,0x1B,0x43,0xAF,0x54,NULL },	/* 2.88MB diskette */
-	{ 5760,36,2,80,0,0x1B,0x43,0xAF,0x54,NULL },	/* 2.88MB diskette */
 };
 
 /*
- * Auto-detection. Each drive type has a pair of formats which are
+ * Auto-detection. Each drive type has a number of formats which are
  * used in succession to try to read the disk. If the FDC cannot lock onto
  * the disk, the next format is tried. This uses the variable 'probing'.
  */
-static struct floppy_struct floppy_types[] = {
+#define	NUMBER(x)	(sizeof(x) / sizeof(*(x)))
+
+static struct floppy_struct floppy_type_1[] = {
 	{  720, 9,2,40,0,0x2A,0x02,0xDF,0x50,"360k/PC" }, /* 360kB PC diskettes */
-	{  720, 9,2,40,0,0x2A,0x02,0xDF,0x50,"360k/PC" }, /* 360kB PC diskettes */
+};
+
+static struct floppy_struct floppy_type_2[] = {
 	{ 2400,15,2,80,0,0x1B,0x00,0xDF,0x54,"1.2M" },	  /* 1.2 MB AT-diskettes */
 	{  720, 9,2,40,1,0x23,0x01,0xDF,0x50,"360k/AT" }, /* 360kB in 1.2MB drive */
+};
+
+static struct floppy_struct floppy_type_3[] = {
 	{ 1440, 9,2,80,0,0x2A,0x02,0xDF,0x50,"720k" },	  /* 3.5" 720kB diskette */
-	{ 1440, 9,2,80,0,0x2A,0x02,0xDF,0x50,"720k" },	  /* 3.5" 720kB diskette */
+};
+
+static struct floppy_struct floppy_type_4[] = {
 	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,"1.44M" },	  /* 1.44MB diskette */
 	{ 1440, 9,2,80,0,0x2A,0x02,0xDF,0x50,"720k/AT" }, /* 3.5" 720kB diskette */
-	{ 5760,36,2,80,0,0x1B,0x43,0xAF,0x54,"2.88M-AMI" },   /* DUMMY */ 
-	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,"1.44M-AMI" },   /* Dummy */
-	{ 5760,36,2,80,0,0x1B,0x43,0xAF,0x54,"2.88M" },   /* 2.88MB diskette */ 
-	{ 2880,18,2,80,0,0x1B,0x40,0xCF,0x6C,"1.44MX" },   /* 1.44MB diskette */ 
+};
+
+static struct floppy_struct floppy_type_5[] = {
+	{ 5760,36,2,80,0,0x1B,0x43,0xAF,0x50,"2.88M" },	  /* 2.88MB diskette */
+	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,"1.44M" },	  /* 1.44MB diskette */
+	{ 1440, 9,2,80,0,0x2A,0x02,0xDF,0x50,"720k/AT" }, /* 3.5" 720kB diskette */
+};
+
+#define	floppy_type_6	floppy_type_5		/* 5 and 6 are the same */
+
+
+static struct floppy_struct *floppy_types[] = {
+	floppy_type_1,
+	floppy_type_2,
+	floppy_type_3,
+	floppy_type_4,
+	floppy_type_5,
+	floppy_type_6,
+};
+
+static int floppy_num_types[] = {
+	NUMBER(floppy_type_1),
+	NUMBER(floppy_type_2),
+	NUMBER(floppy_type_3),
+	NUMBER(floppy_type_4),
+	NUMBER(floppy_type_5),
+	NUMBER(floppy_type_6),
 };
 
 /* Auto-detection: Disk type used until the next media change occurs. */
 struct floppy_struct *current_type[4] = { NULL, NULL, NULL, NULL };
 
 /* This type is tried first. */
-struct floppy_struct *base_type[4];
+struct floppy_struct *base_type[4] = { NULL, NULL, NULL, NULL };
+
+/* This gives the end of the list */
+struct floppy_struct *base_type_end[4];
 
 /*
  * User-provided type information. current_type points to
@@ -279,8 +317,8 @@ static unsigned short min_report_error_cnt[4] = {2, 2, 2, 2};
  * Track buffer and block buffer (in case track buffering doesn't work).
  * Because these are written to by the DMA controller, they must
  * not contain a 64k byte boundary crossing, or data will be
- * corrupted/lost. Alignment of these is enforced in boot/head.s.
- * Note that you must not change the sizes below without updating head.s.
+ * corrupted/lost. Alignment of these is enforced in boot/head.S.
+ * Note that you must not change the sizes below without updating head.S.
  */
 extern char tmp_floppy_area[BLOCK_SIZE];
 extern char floppy_track_buffer[512*2*MAX_BUFFER_SECTORS];
@@ -395,6 +433,7 @@ static void floppy_off(unsigned int nr)
 void request_done(int uptodate)
 {
 	timer_active &= ~(1 << FLOPPY_TIMER);
+	probing = 0;
 	if (format_status != FORMAT_BUSY)
 		end_request(uptodate);
 	else {
@@ -563,6 +602,13 @@ static void bad_flp_intr(void)
 {
 	int errors;
 
+	if (probing) {
+		int device = MINOR(CURRENT_DEVICE) & 3;
+		++floppy;
+		if (floppy < base_type_end[device])
+			return;
+		floppy = base_type[device];
+	}
 	current_track = NO_TRACK;
 	if (format_status == FORMAT_BUSY)
 		errors = ++format_errors;
@@ -991,8 +1037,20 @@ static void shake_one(void)
 	output_byte(1);
 }
 
+static void check_readonly(void)
+{
+	unsigned long mask = 1 << current_drive;
+
+	read_only &= ~mask;
+	output_byte(FD_GETSTATUS);
+	output_byte(current_drive);
+	if ((result() == 1) && (ST3 & ST3_RY) && !(ST3 & ST3_FT) && (ST3 & ST3_WP))
+		read_only |= mask;
+}
+
 static void floppy_ready(void)
 {
+	check_readonly();
 	if (inb(FD_DIR) & 0x80) {
 		changed_floppies |= 1<<current_drive;
 		buffer_track = -1;
@@ -1080,21 +1138,20 @@ repeat:
 		}
 	}
 	seek = 0;
-	probing = 0;
 	device = MINOR(CURRENT_DEVICE);
 	if (device > 3)
 		floppy = (device >> 2) + floppy_type;
 	else { /* Auto-detection */
-		floppy = current_type[device & 3];
-		if (!floppy) {
-			probing = 1;
-			floppy = base_type[device & 3];
+		if (!probing) {
+			floppy = current_type[device & 3];
 			if (!floppy) {
-				request_done(0);
-				goto repeat;
+				probing = 1;
+				floppy = base_type[device & 3];
+				if (!floppy) {
+					request_done(0);
+					goto repeat;
+				}
 			}
-			if (CURRENT_ERRORS & 1)
-				floppy++;
 		}
 	}
 	if (format_status != FORMAT_BUSY) {
@@ -1297,34 +1354,40 @@ outb_p(addr,0x70); \
 inb_p(0x71); \
 })
 
-static struct floppy_struct *find_base(int drive,int code)
+static void set_base_type(int drive,int code)
 {
 	struct floppy_struct *base;
 
-	if (code > 0 && code < 7) {                            /* -bb*/
-		base = &floppy_types[(code-1)*2];
+	if (code > 0 && code <= NUMBER(floppy_types)) {
+		base = floppy_types[code-1];
 		printk("fd%d is %s",drive,base->name);
-		return base;
-	} else if (!code) {
+		base_type[drive] = base;
+		base_type_end[drive] = base + floppy_num_types[code-1];
+	} else if (!code)
 		printk("fd%d is not installed", drive);
-		return NULL;
-	}
-	printk("fd%d is unknown type %d",drive,code);
-	return NULL;
+	else
+		printk("fd%d is unknown type %d",drive,code);
 }
 
 static void config_types(void)
 {
 	printk("Floppy drive(s): ");
-	base_type[0] = find_base(0,(CMOS_READ(0x10) >> 4) & 15);
-	if ((CMOS_READ(0x10) & 15) == 0)
-		base_type[1] = NULL;
-	else {
+	set_base_type(0, (CMOS_READ(0x10) >> 4) & 15);
+	if (CMOS_READ(0x10) & 15) {
 		printk(", ");
-		base_type[1] = find_base(1,CMOS_READ(0x10) & 15);
+		set_base_type(1, CMOS_READ(0x10) & 15);
 	}
-	base_type[2] = base_type[3] = NULL;
 	printk("\n");
+}
+
+static void floppy_release(struct inode * inode, struct file * filp)
+{
+	fsync_dev(inode->i_rdev);
+	if (!fd_ref[inode->i_rdev & 3]--) {
+		printk("floppy_release with fd_ref == 0");
+		fd_ref[inode->i_rdev & 3] = 0;
+	}
+	floppy_release_irq_and_dma();
 }
 
 /*
@@ -1349,19 +1412,16 @@ static int floppy_open(struct inode * inode, struct file * filp)
 	buffer_drive = buffer_track = -1;
 	if (old_dev && old_dev != inode->i_rdev)
 		invalidate_buffers(old_dev);
-	if (filp && filp->f_mode)
+	if (filp && filp->f_mode) {
 		check_disk_change(inode->i_rdev);
-	return 0;
-}
-
-static void floppy_release(struct inode * inode, struct file * filp)
-{
-	fsync_dev(inode->i_rdev);
-	if (!fd_ref[inode->i_rdev & 3]--) {
-		printk("floppy_release with fd_ref == 0");
-		fd_ref[inode->i_rdev & 3] = 0;
+		if (filp->f_mode & 2) {
+			if (1 & (read_only >> drive)) {
+				floppy_release(inode, filp);
+				return -EACCES;
+			}
+		}
 	}
-        floppy_release_irq_and_dma();
+	return 0;
 }
 
 static int check_floppy_change(dev_t dev)

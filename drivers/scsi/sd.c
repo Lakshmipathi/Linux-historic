@@ -38,7 +38,7 @@ static const char RCSid[] = "$Header:";
  *	Time out in seconds for disks and Magneto-opticals (which are slower).
  */
 
-#define SD_TIMEOUT 300
+#define SD_TIMEOUT 600
 #define SD_MOD_TIMEOUT 750
 
 #define CLUSTERABLE_DEVICE(SC) (SC->host->hostt->use_clustering && \
@@ -775,16 +775,12 @@ static int check_scsidisk_media_change(dev_t full_dev){
 static void sd_init_done (Scsi_Cmnd * SCpnt)
 {
   struct request * req;
-  struct task_struct * p;
   
   req = &SCpnt->request;
   req->dev = 0xfffe; /* Busy, but indicate request done */
   
-  if ((p = req->waiting) != NULL) {
-    req->waiting = NULL;
-    p->state = TASK_RUNNING;
-    if (p->counter > current->counter)
-      need_resched = 1;
+  if (req->sem != NULL) {
+    up(req->sem);
   }
 }
 
@@ -884,8 +880,10 @@ static int sd_init_onedisk(int i)
       while(SCpnt->request.dev != 0xfffe);
     else
       if (SCpnt->request.dev != 0xfffe){
-	SCpnt->request.waiting = current;
-	current->state = TASK_UNINTERRUPTIBLE;
+      	struct semaphore sem = MUTEX_LOCKED;
+	SCpnt->request.sem = &sem;
+	down(&sem);
+	/* Hmm.. Have to ask about this one.. */
 	while (SCpnt->request.dev != 0xfffe) schedule();
       };
     

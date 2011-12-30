@@ -55,11 +55,14 @@ struct vm_area_struct {
 struct vm_operations_struct {
 	void (*open)(struct vm_area_struct * area);
 	void (*close)(struct vm_area_struct * area);
-	void (*nopage)(int error_code,
-		       struct vm_area_struct * area, unsigned long address);
-	void (*wppage)(struct vm_area_struct * area, unsigned long address);
+	unsigned long (*nopage)(struct vm_area_struct * area, unsigned long address,
+		unsigned long page, int error_code);
+	unsigned long (*wppage)(struct vm_area_struct * area, unsigned long address,
+		unsigned long page);
 	int (*share)(struct vm_area_struct * from, struct vm_area_struct * to, unsigned long address);
 	int (*unmap)(struct vm_area_struct *area, unsigned long, size_t);
+	void (*swapout)(struct vm_area_struct *,  unsigned long *);
+	unsigned long (*swapin)(struct vm_area_struct *,  unsigned long);
 };
 
 extern unsigned long __bad_page(void);
@@ -135,6 +138,7 @@ extern void free_pages(unsigned long addr, unsigned long order);
 extern void show_free_areas(void);
 extern unsigned long put_dirty_page(struct task_struct * tsk,unsigned long page,
 	unsigned long address);
+
 extern void free_page_tables(struct task_struct * tsk);
 extern void clear_page_tables(struct task_struct * tsk);
 extern int copy_page_tables(struct task_struct * to);
@@ -143,10 +147,10 @@ extern int unmap_page_range(unsigned long from, unsigned long size);
 extern int remap_page_range(unsigned long from, unsigned long to, unsigned long size, int mask);
 extern int zeromap_page_range(unsigned long from, unsigned long size, int mask);
 
-extern void do_wp_page(unsigned long error_code, unsigned long address,
-	struct task_struct *tsk, unsigned long user_esp);
-extern void do_no_page(unsigned long error_code, unsigned long address,
-	struct task_struct *tsk, unsigned long user_esp);
+extern void do_wp_page(struct vm_area_struct * vma, unsigned long address,
+	unsigned long error_code);
+extern void do_no_page(struct vm_area_struct * vma, unsigned long address,
+	unsigned long error_code);
 
 extern unsigned long paging_init(unsigned long start_mem, unsigned long end_mem);
 extern void mem_init(unsigned long low_start_mem,
@@ -165,7 +169,7 @@ extern int vread(char *buf, char *addr, int count);
 
 extern void swap_free(unsigned long page_nr);
 extern unsigned long swap_duplicate(unsigned long page_nr);
-extern void swap_in(unsigned long *table_ptr);
+extern unsigned long swap_in(unsigned long entry);
 extern void si_swapinfo(struct sysinfo * val);
 extern void rw_swap_page(int rw, unsigned long nr, char * buf);
 
@@ -220,5 +224,13 @@ extern unsigned short * mem_map;
 /* vm_ops not present page codes */
 #define SHM_SWP_TYPE 0x41
 extern void shm_no_page (ulong *);
+
+/* swap cache stuff (in swap.c) */
+extern unsigned long * swap_cache;
+
+extern inline unsigned long in_swap_cache (unsigned long addr)
+{
+	return swap_cache[addr >> PAGE_SHIFT]; 
+}
 
 #endif

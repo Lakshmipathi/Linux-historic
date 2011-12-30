@@ -209,4 +209,13 @@ static unsigned char sb16_recmasks_R[SOUND_MIXER_NRDEVICES] =
 	0x00,	/* SOUND_MIXER_ALTPCM	*/
 	0x00	/* SOUND_MIXER_RECLEV	*/
 };
+
+/*
+ *	Recording sources (SB Pro)
+ */
+
+#define SRC_MIC         1	/* Select Microphone recording source */
+#define SRC_CD          3	/* Select CD recording source */
+#define SRC_LINE        7	/* Use Line-in for recording source */
+
 #endif

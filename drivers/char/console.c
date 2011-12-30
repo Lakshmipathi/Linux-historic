@@ -35,6 +35,9 @@
  * Code to check for different video-cards mostly by Galen Hunt,
  * <g-hunt@ee.utah.edu>
  *
+ * Code for xterm like mouse click reporting by Peter Orbaek 20-Jul-94
+ * <poe@daimi.aau.dk>
+ *
  */
 
 #define CAN_LOAD_EGA_FONTS    /* undefine if the user must not do this */
@@ -80,9 +83,10 @@ static struct termios *console_termios_locked[NR_CONSOLES];
 #include <linux/ctype.h>
 
 /* Routines for selection control. */
-int set_selection(const int arg);
+int set_selection(const int arg, struct tty_struct *tty);
 int paste_selection(struct tty_struct *tty);
 static void clear_selection(void);
+static void highlight_pointer(const int currcons, const int where);
 
 /* Variables for selection control. */
 #define SEL_BUFFER_SIZE 4096
@@ -152,6 +156,7 @@ static struct {
 	/* misc */
 	unsigned long	vc_ques		: 1;
 	unsigned long	vc_need_wrap	: 1;
+	unsigned long	vc_report_mouse : 1;
 	unsigned long	vc_tab_stop[5];		/* Tab stops. 160 columns. */
 	unsigned char * vc_translate;
 	unsigned char *	vc_G0_charset;
@@ -195,6 +200,7 @@ static int console_blanked = 0;
 #define deccm		(vc_cons[currcons].vc_deccm)
 #define decim		(vc_cons[currcons].vc_decim)
 #define need_wrap	(vc_cons[currcons].vc_need_wrap)
+#define report_mouse	(vc_cons[currcons].vc_report_mouse)
 #define color		(vc_cons[currcons].vc_color)
 #define s_color		(vc_cons[currcons].vc_s_color)
 #define def_color	(vc_cons[currcons].vc_def_color)
@@ -774,6 +780,16 @@ static void cursor_report(int currcons, struct tty_struct * tty)
 	respond_string(buf, tty);
 }
 
+static void mouse_report(int currcons, struct tty_struct * tty,
+			 int butt, int mrx, int mry)
+{
+	char buf[8];
+
+	sprintf(buf, "\033[M%c%c%c", (char)(' ' + butt), (char)('!' + mrx),
+		(char)('!' + mry));
+	respond_string(buf, tty);
+}
+
 static inline void status_report(int currcons, struct tty_struct * tty)
 {
 	respond_string("\033[0n", tty);	/* Terminal ok */
@@ -830,6 +846,9 @@ static void set_mode(int currcons, int on_off)
 					set_kbd(decarm);
 				else
 					clr_kbd(decarm);
+				break;
+			case 9:
+				report_mouse = on_off;
 				break;
 			case 25:		/* Cursor on/off */
 				deccm = on_off;
@@ -1000,6 +1019,7 @@ static void reset_terminal(int currcons, int do_clear)
 	G1_charset	= GRAF_TRANS;
 	charset		= 0;
 	need_wrap	= 0;
+	report_mouse	= 0;
 
 	disp_ctrl	= 0;
 	toggle_meta	= 0;
@@ -1703,6 +1723,9 @@ void update_screen(int new_console)
 		return;
 	lock = 1;
 	kbdsave(new_console);
+#ifdef CONFIG_SELECTION
+	highlight_pointer(fg_console,-1);
+#endif /* CONFIG_SELECTION */
 	get_scrmem(fg_console); 
 	fg_console = new_console;
 	set_scrmem(fg_console); 
@@ -1778,8 +1801,49 @@ static void highlight(const int currcons, const int s, const int e)
 		*p = (*p & 0x88) | ((*p << 4) & 0x70) | ((*p >> 4) & 0x07);
 }
 
-/* is c in range [a-zA-Z0-9_]? */
-static inline int inword(const char c) { return (isalnum(c) || c == '_'); }
+/* use complementary color to show the pointer */
+static void highlight_pointer(const int currcons, const int where)
+{
+        unsigned char *p;
+	static char *prev=NULL;
+
+	if (where==-1) /* remove the pointer */
+	{
+                if (prev)
+		{
+			*prev ^= 0x77;
+			prev=NULL;
+		}
+        }
+	else
+	{
+	        p = (unsigned char *)origin - hwscroll_offset + where + 1;
+		*p ^= 0x77;
+		if (prev) *prev ^= 0x77; /* remove the previous one */
+		prev=p;
+	}
+}
+
+
+/*
+ * This function uses a 128-bit look up table
+ */
+static unsigned long inwordLut[4]={
+  0x00000000, /* control chars     */
+  0x03FF0000, /* digits            */
+  0x87FFFFFE, /* uppercase and '_' */
+  0x07FFFFFE  /* lowercase         */
+};
+static inline int inword(const char c) {
+   return ( inwordLut[(c>>5)&3] >> (c&0x1F) ) & 1;
+}
+
+/* set inwordLut conntents. Invoked by ioctl(). */
+int sel_loadlut(const int arg)
+{
+    memcpy_fromfs(inwordLut,(unsigned long *)(arg+4),16);
+    return 0;
+}
 
 /* does screen address p correspond to character at LH/RH edge of screen? */
 static inline int atedge(const int p)
@@ -1793,8 +1857,16 @@ static inline short limit(const int v, const int l, const int u)
 	return (v < l) ? l : ((v > u) ? u : v);
 }
 
+/* invoked via ioctl(TIOCLINUX) */
+int mouse_reporting_p(void)
+{
+	int currcons = fg_console;
+
+	return ((report_mouse) ? 0 : -EINVAL);
+}
+
 /* set the current selection. Invoked by ioctl(). */
-int set_selection(const int arg)
+int set_selection(const int arg, struct tty_struct *tty)
 {
 	unsigned short *args, xs, ys, xe, ye;
 	int currcons = fg_console;
@@ -1818,6 +1890,11 @@ int set_selection(const int arg)
 	ps = ys * video_size_row + (xs << 1);
 	pe = ye * video_size_row + (xe << 1);
 
+	if (report_mouse && (sel_mode & 16)) {
+		mouse_report(currcons, tty, sel_mode & 15, xs, ys);
+		return 0;
+	}
+
 	if (ps > pe)	/* make sel_start <= sel_end */
 	{
 		int tmp = ps;
@@ -1828,7 +1905,6 @@ int set_selection(const int arg)
 	switch (sel_mode)
 	{
 		case 0:	/* character-by-character selection */
-		default:
 			new_sel_start = ps;
 			new_sel_end = pe;
 			break;
@@ -1859,6 +1935,17 @@ int set_selection(const int arg)
 			new_sel_end = pe + video_size_row
 				    - pe % video_size_row - 2;
 			break;
+                case 3: /* pointer highlight */
+		        if (sel_cons != currcons)
+        		{
+				highlight_pointer(sel_cons,-1);
+        	        	clear_selection();
+                		sel_cons = currcons;
+        		}
+			highlight_pointer(sel_cons,pe);
+			return 0; /* nothing more */
+	        default:
+			return -EINVAL;
 	}
 	/* select to end of line if on trailing space */
 	if (new_sel_end > new_sel_start &&
@@ -1962,6 +2049,7 @@ int paste_selection(struct tty_struct *tty)
    the selection. */
 static void clear_selection()
 {
+        highlight_pointer(sel_cons, -1); /* hide the pointer */
 	if (sel_start != -1)
 	{
 		highlight(sel_cons, sel_start, sel_end);
