@@ -50,11 +50,9 @@ int nfs_mmap(struct inode * inode, struct file * file,
 {
 	struct vm_area_struct * mpnt;
 
-	if (off & (inode->i_sb->s_blocksize - 1))
+	if (prot & PAGE_RW)	/* only PAGE_COW or read-only supported now */
 		return -EINVAL;
-	if (len > high_memory || off > high_memory - len) /* avoid overflow */
-		return -ENXIO;
-	if (get_limit(USER_DS) != TASK_SIZE)
+	if (off & (inode->i_sb->s_blocksize - 1))
 		return -EINVAL;
 	if (!inode->i_sb || !S_ISREG(inode->i_mode))
 		return -EACCES;
@@ -79,10 +77,6 @@ int nfs_mmap(struct inode * inode, struct file * file,
 	mpnt->vm_ops = &nfs_file_mmap;
 	mpnt->vm_next = current->mmap;
 	current->mmap = mpnt;
-#if 0
-	printk("VFS: Loaded mmap at %08x - %08x\n",
-		mpnt->vm_start,	mpnt->vm_end);
-#endif
 	return 0;
 }
 
