@@ -22,6 +22,23 @@
 #include <asm/segment.h>
 #include <asm/io.h>
 
+static inline void console_verbose(void)
+{
+	extern int console_loglevel;
+	console_loglevel = 15;
+}
+
+#define DO_ERROR(trapnr, signr, str, name, tsk) \
+asmlinkage void do_##name(struct pt_regs * regs, long error_code) \
+{ \
+	tsk->tss.error_code = error_code; \
+	tsk->tss.trap_no = trapnr; \
+	if (signr == SIGTRAP && current->flags & PF_PTRACED) \
+		current->blocked &= ~(1 << (SIGTRAP-1)); \
+	send_sig(signr, tsk, 1); \
+	die_if_kernel(str,regs,error_code); \
+}
+
 #define get_seg_byte(seg,addr) ({ \
 register char __res; \
 __asm__("push %%fs;mov %%ax,%%fs;movb %%fs:%2,%%al;pop %%fs" \
@@ -67,57 +84,42 @@ asmlinkage void alignment_check(void);
 	if ((regs->eflags & VM_MASK) || (3 & regs->cs) == 3)
 		return;
 
-	printk("%s: %04x\n", str, err & 0xffff);
-	printk("EIP:    %04x:%08x\nEFLAGS: %08x\n", 0xffff & regs->cs,regs->eip,regs->eflags);
-	printk("eax: %08x   ebx: %08x   ecx: %08x   edx: %08x\n",
+	console_verbose();
+	printk("%s: %04lx\n", str, err & 0xffff);
+	printk("EIP:    %04x:%08lx\nEFLAGS: %08lx\n", 0xffff & regs->cs,regs->eip,regs->eflags);
+	printk("eax: %08lx   ebx: %08lx   ecx: %08lx   edx: %08lx\n",
 		regs->eax, regs->ebx, regs->ecx, regs->edx);
-	printk("esi: %08x   edi: %08x   ebp: %08x\n",
+	printk("esi: %08lx   edi: %08lx   ebp: %08lx\n",
 		regs->esi, regs->edi, regs->ebp);
 	printk("ds: %04x   es: %04x   fs: %04x   gs: %04x\n",
 		regs->ds, regs->es, regs->fs, regs->gs);
 	store_TR(i);
-	printk("Pid: %d, process nr: %d\n", current->pid, 0xffff & i);
-	for(i=0;i<10;i++)
+	printk("Pid: %d, process nr: %d (%s)\n", current->pid, 0xffff & i, current->comm);
+	for(i=0;i<20;i++)
 		printk("%02x ",0xff & get_seg_byte(regs->cs,(i+(char *)regs->eip)));
 	printk("\n");
 	do_exit(SIGSEGV);
 }
 
-asmlinkage void do_double_fault(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("double fault",regs,error_code);
-}
-
-asmlinkage void do_general_protection(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("general protection",regs,error_code);
-}
-
-asmlinkage void do_alignment_check(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("alignment check",regs,error_code);
-}
-
-asmlinkage void do_divide_error(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGFPE, current, 1);
-	die_if_kernel("divide error",regs,error_code);
-}
-
-asmlinkage void do_int3(struct pt_regs * regs, long error_code)
-{
-	if (current->flags & PF_PTRACED)
-		current->blocked &= ~(1 << (SIGTRAP-1));
-	send_sig(SIGTRAP, current, 1);
-	die_if_kernel("int3",regs,error_code);
-}
+DO_ERROR( 0, SIGFPE,  "divide error", divide_error, current)
+DO_ERROR( 3, SIGTRAP, "int3", int3, current)
+DO_ERROR( 4, SIGSEGV, "overflow", overflow, current)
+DO_ERROR( 5, SIGSEGV, "bounds", bounds, current)
+DO_ERROR( 6, SIGILL,  "invalid operand", invalid_op, current)
+DO_ERROR( 7, SIGSEGV, "device not available", device_not_available, current)
+DO_ERROR( 8, SIGSEGV, "double fault", double_fault, current)
+DO_ERROR( 9, SIGFPE,  "coprocessor segment overrun", coprocessor_segment_overrun, last_task_used_math)
+DO_ERROR(10, SIGSEGV, "invalid TSS", invalid_TSS, current)
+DO_ERROR(11, SIGSEGV, "segment not present", segment_not_present, current)
+DO_ERROR(12, SIGSEGV, "stack segment", stack_segment, current)
+DO_ERROR(13, SIGSEGV, "general protection", general_protection, current)
+DO_ERROR(15, SIGSEGV, "reserved", reserved, current)
+DO_ERROR(17, SIGSEGV, "alignment check", alignment_check, current)
 
 asmlinkage void do_nmi(struct pt_regs * regs, long error_code)
 {
 	printk("Uhhuh. NMI received. Dazed and confused, but trying to continue\n");
+	printk("You probably have a hardware problem with your RAM chips\n");
 }
 
 asmlinkage void do_debug(struct pt_regs * regs, long error_code)
@@ -125,55 +127,18 @@ asmlinkage void do_debug(struct pt_regs * regs, long error_code)
 	if (current->flags & PF_PTRACED)
 		current->blocked &= ~(1 << (SIGTRAP-1));
 	send_sig(SIGTRAP, current, 1);
+	current->tss.trap_no = 1;
+	current->tss.error_code = error_code;
+	if((regs->cs & 3) == 0) {
+	  /* If this is a kernel mode trap, then reset db7 and allow us to continue */
+	  __asm__("movl $0,%%edx\n\t" \
+		  "movl %%edx,%%db7\n\t" \
+		  : /* no output */ \
+		  : /* no input */ :"dx");
+
+	  return;
+	};
 	die_if_kernel("debug",regs,error_code);
-}
-
-asmlinkage void do_overflow(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("overflow",regs,error_code);
-}
-
-asmlinkage void do_bounds(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("bounds",regs,error_code);
-}
-
-asmlinkage void do_invalid_op(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGILL, current, 1);
-	die_if_kernel("invalid operand",regs,error_code);
-}
-
-asmlinkage void do_device_not_available(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("device not available",regs,error_code);
-}
-
-asmlinkage void do_coprocessor_segment_overrun(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGFPE, last_task_used_math, 1);
-	die_if_kernel("coprocessor segment overrun",regs,error_code);
-}
-
-asmlinkage void do_invalid_TSS(struct pt_regs * regs,long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("invalid TSS",regs,error_code);
-}
-
-asmlinkage void do_segment_not_present(struct pt_regs * regs,long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("segment not present",regs,error_code);
-}
-
-asmlinkage void do_stack_segment(struct pt_regs * regs,long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("stack segment",regs,error_code);
 }
 
 /*
@@ -202,12 +167,14 @@ void math_error(void)
 	}
 	env = &last_task_used_math->tss.i387.hard;
 	send_sig(SIGFPE, last_task_used_math, 1);
+	last_task_used_math->tss.trap_no = 16;
+	last_task_used_math->tss.error_code = 0;
 	__asm__ __volatile__("fnsave %0":"=m" (*env));
 	last_task_used_math = NULL;
 	stts();
 	env->fcs = (env->swd & 0x0000ffff) | (env->fcs & 0xffff0000);
 	env->fos = env->twd;
-	env->swd &= 0xffff0000;
+	env->swd &= 0xffff3800;
 	env->twd = 0xffffffff;
 }
 
@@ -215,12 +182,6 @@ asmlinkage void do_coprocessor_error(struct pt_regs * regs, long error_code)
 {
 	ignore_irq13 = 1;
 	math_error();
-}
-
-asmlinkage void do_reserved(struct pt_regs * regs, long error_code)
-{
-	send_sig(SIGSEGV, current, 1);
-	die_if_kernel("reserved (15,17-47) error",regs,error_code);
 }
 
 void trap_init(void)

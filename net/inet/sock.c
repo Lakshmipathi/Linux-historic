@@ -11,22 +11,76 @@
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
  *		Florian La Roche, <flla@stud.uni-sb.de>
  *
+ * Fixes:
+ *		Alan Cox	: 	Numerous verify_area() problems
+ *		Alan Cox	:	Connecting on a connecting socket
+ *					now returns an error for tcp.
+ *		Alan Cox	:	sock->protocol is set correctly.
+ *					and is not sometimes left as 0.
+ *		Alan Cox	:	connect handles icmp errors on a
+ *					connect properly. Unfortunately there
+ *					is a restart syscall nasty there. I
+ *					can't match BSD without hacking the C
+ *					library. Ideas urgently sought!
+ *		Alan Cox	:	Disallow bind() to addresses that are
+ *					not ours - especially broadcast ones!!
+ *		Alan Cox	:	Socket 1024 _IS_ ok for users. (fencepost)
+ *		Alan Cox	:	sock_wfree/sock_rfree don't destroy sockets,
+ *					instead they leave that for the DESTROY timer.
+ *		Alan Cox	:	Clean up error flag in accept
+ *		Alan Cox	:	TCP ack handling is buggy, the DESTROY timer
+ *					was buggy. Put a remove_sock() in the handler
+ *					for memory when we hit 0. Also altered the timer
+ *					code. The ACK stuff can wait and needs major 
+ *					TCP layer surgery.
+ *		Alan Cox	:	Fixed TCP ack bug, removed remove sock
+ *					and fixed timer/inet_bh race.
+ *		Alan Cox	:	Added zapped flag for TCP
+ *		Alan Cox	:	Move kfree_skb into skbuff.c and tidied up surplus code
+ *		Alan Cox	:	for new sk_buff allocations wmalloc/rmalloc now call alloc_skb
+ *		Alan Cox	:	kfree_s calls now are kfree_skbmem so we can track skb resources
+ *		Alan Cox	:	Supports socket option broadcast now as does udp. Packet and raw need fixing.
+ *		Alan Cox	:	Added RCVBUF,SNDBUF size setting. It suddenely occured to me how easy it was so...
+ *		Rick Sladkey	:	Relaxed UDP rules for matching packets.
+ *		C.E.Hawkins	:	IFF_PROMISC/SIOCGHWADDR support
+ *	Pauline Middelink	:	Pidentd support
+ *		Alan Cox	:	Fixed connect() taking signals I think.
+ *		Alan Cox	:	SO_LINGER supported
+ *		Alan Cox	:	Error reporting fixes
+ *		Anonymous	:	inet_create tidied up (sk->reuse setting)
+ *		Alan Cox	:	inet sockets don't set sk->type!
+ *		Alan Cox	:	Split socket option code
+ *		Alan Cox	:	Callbacks
+ *		Alan Cox	:	Nagle flag for Charles & Johannes stuff
+ *
+ * To Fix:
+ *
+ *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  */
+
 #include <linux/config.h>
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/in.h>
 #include <linux/kernel.h>
+#include <linux/major.h>
 #include <linux/sched.h>
 #include <linux/timer.h>
 #include <linux/string.h>
 #include <linux/sockios.h>
 #include <linux/net.h>
+#include <linux/fcntl.h>
+#include <linux/mm.h>
+#include <linux/interrupt.h>
+
+#include <asm/segment.h>
+#include <asm/system.h>
+
 #include "inet.h"
 #include "dev.h"
 #include "ip.h"
@@ -37,11 +91,6 @@
 #include "udp.h"
 #include "skbuff.h"
 #include "sock.h"
-#include <asm/segment.h>
-#include <asm/system.h>
-#include <linux/fcntl.h>
-#include <linux/mm.h>
-#include <linux/interrupt.h>
 #include "raw.h"
 #include "icmp.h"
 
@@ -61,24 +110,24 @@ print_sk(struct sock *sk)
 	printk("  print_sk(NULL)\n");
 	return;
   }
-  printk("  wmem_alloc = %d\n", sk->wmem_alloc);
-  printk("  rmem_alloc = %d\n", sk->rmem_alloc);
+  printk("  wmem_alloc = %lu\n", sk->wmem_alloc);
+  printk("  rmem_alloc = %lu\n", sk->rmem_alloc);
   printk("  send_head = %p\n", sk->send_head);
   printk("  state = %d\n",sk->state);
   printk("  wback = %p, rqueue = %p\n", sk->wback, sk->rqueue);
   printk("  wfront = %p\n", sk->wfront);
-  printk("  daddr = %X, saddr = %X\n", sk->daddr,sk->saddr);
+  printk("  daddr = %lX, saddr = %lX\n", sk->daddr,sk->saddr);
   printk("  num = %d", sk->num);
   printk(" next = %p\n", sk->next);
-  printk("  send_seq = %d, acked_seq = %d, copied_seq = %d\n",
+  printk("  send_seq = %ld, acked_seq = %ld, copied_seq = %ld\n",
 	  sk->send_seq, sk->acked_seq, sk->copied_seq);
-  printk("  rcv_ack_seq = %d, window_seq = %d, fin_seq = %d\n",
+  printk("  rcv_ack_seq = %ld, window_seq = %ld, fin_seq = %ld\n",
 	  sk->rcv_ack_seq, sk->window_seq, sk->fin_seq);
   printk("  prot = %p\n", sk->prot);
   printk("  pair = %p, back_log = %p\n", sk->pair,sk->back_log);
   printk("  inuse = %d , blog = %d\n", sk->inuse, sk->blog);
   printk("  dead = %d delay_acks=%d\n", sk->dead, sk->delay_acks);
-  printk("  retransmits = %d, timeout = %d\n", sk->retransmits, sk->timeout);
+  printk("  retransmits = %ld, timeout = %d\n", sk->retransmits, sk->timeout);
   printk("  cong_window = %d, packets_out = %d\n", sk->cong_window,
 	  sk->packets_out);
   printk("  urg = %d shutdown=%d\n", sk->urg, sk->shutdown);
@@ -94,55 +143,10 @@ print_skb(struct sk_buff *skb)
   }
   printk("  prev = %p, next = %p\n", skb->prev, skb->next);
   printk("  sk = %p link3 = %p\n", skb->sk, skb->link3);
-  printk("  mem_addr = %p, mem_len = %d\n", skb->mem_addr, skb->mem_len);
+  printk("  mem_addr = %p, mem_len = %lu\n", skb->mem_addr, skb->mem_len);
   printk("  used = %d free = %d\n", skb->used,skb->free);
 }
 
-
-void
-lock_skb(struct sk_buff *skb)
-{
-  if (skb->lock) {
-	printk("*** bug more than one lock on sk_buff. \n");
-  }
-  skb->lock = 1;
-}
-
-
-void
-kfree_skb(struct sk_buff *skb, int rw)
-{
-  if (skb == NULL) {
-	printk("kfree_skb: skb = NULL\n");
-	return;
-  }
-
-  if (skb->lock) {
-	skb->free = 1;
-	return;
-  }
-  skb->magic = 0;
-  if (skb->sk) {
-	if (rw) {
-	     skb->sk->prot->rfree(skb->sk, skb->mem_addr, skb->mem_len);
-	} else {
-	     skb->sk->prot->wfree(skb->sk, skb->mem_addr, skb->mem_len);
-	}
-  } else {
-	kfree_s(skb->mem_addr, skb->mem_len);
-  }
-}
-
-
-void
-unlock_skb(struct sk_buff *skb, int rw)
-{
-  if (skb->lock != 1) {
-	printk("INET: *** bug unlocking non-locked sk_buff. \n");
-  }
-  skb->lock = 0;
-  if (skb->free) kfree_skb(skb, rw);
-}
 
 
 static int
@@ -305,180 +309,140 @@ remove_sock(struct sock *sk1)
 void
 destroy_sock(struct sock *sk)
 {
-  struct sk_buff *skb;
+	struct sk_buff *skb;
 
-  DPRINTF((DBG_INET, "destroying socket %X\n", sk));
-  sk->inuse = 1;			/* just to be safe. */
+  	DPRINTF((DBG_INET, "destroying socket %X\n", sk));
+  	sk->inuse = 1;			/* just to be safe. */
 
-  /* Incase it's sleeping somewhere. */
-  if (!sk->dead) wake_up(sk->sleep);
+  	/* Incase it's sleeping somewhere. */
+  	if (!sk->dead) 
+  		sk->write_space(sk);
 
-  remove_sock(sk);
+  	remove_sock(sk);
+  
+  	/* Now we can no longer get new packets. */
+  	delete_timer(sk);
 
-  /* Now we can no longer get new packets. */
-  delete_timer(sk);
 
-  if (sk->send_tmp != NULL) kfree_skb(sk->send_tmp, FREE_WRITE);
+	while ((skb = tcp_dequeue_partial(sk)) != NULL) 
+  	{
+  		IS_SKB(skb);
+  		kfree_skb(skb, FREE_WRITE);
+  	}
 
   /* Cleanup up the write buffer. */
-  for(skb = sk->wfront; skb != NULL; ) {
-	struct sk_buff *skb2;
-
-	skb2=(struct sk_buff *)skb->next;
-	if (skb->magic != TCP_WRITE_QUEUE_MAGIC) {
-		printk("sock.c:destroy_sock write queue with bad magic(%X)\n",
-								skb->magic);
-		break;
-	}
-	kfree_skb(skb, FREE_WRITE);
-	skb = skb2;
-  }
-
-  sk->wfront = NULL;
-  sk->wback = NULL;
-
-  if (sk->rqueue != NULL) {
-	skb = sk->rqueue;
-	do {
+  	for(skb = sk->wfront; skb != NULL; ) 
+  	{
 		struct sk_buff *skb2;
 
-		skb2 = (struct sk_buff *)skb->next;
+		skb2=(struct sk_buff *)skb->next;
+		if (skb->magic != TCP_WRITE_QUEUE_MAGIC) {
+			printk("sock.c:destroy_sock write queue with bad magic(%X)\n",
+								skb->magic);
+			break;
+		}
+		IS_SKB(skb);
+		kfree_skb(skb, FREE_WRITE);
+		skb = skb2;
+  	}
 
+  	sk->wfront = NULL;
+  	sk->wback = NULL;
+
+  	if (sk->rqueue != NULL) 
+  	{
+	  	while((skb=skb_dequeue(&sk->rqueue))!=NULL)
+	  	{
 		/*
 		 * This will take care of closing sockets that were
 		 * listening and didn't accept everything.
 		 */
-		if (skb->sk != NULL && skb->sk != sk) {
-			skb->sk->dead = 1;
-			skb->sk->prot->close(skb->sk, 0);
+			if (skb->sk != NULL && skb->sk != sk) 
+			{
+				IS_SKB(skb);
+				skb->sk->dead = 1;
+				skb->sk->prot->close(skb->sk, 0);
+			}
+			IS_SKB(skb);
+			kfree_skb(skb, FREE_READ);
 		}
-		kfree_skb(skb, FREE_READ);
-		skb = skb2;
-	} while(skb != sk->rqueue);
-  }
-  sk->rqueue = NULL;
+  	}
+  	sk->rqueue = NULL;
 
   /* Now we need to clean up the send head. */
-  for(skb = sk->send_head; skb != NULL; ) {
-	struct sk_buff *skb2;
-
-	/*
-	 * We need to remove skb from the transmit queue,
-	 * or maybe the arp queue.
-	 */
-	cli();
-	/* see if it's in a transmit queue. */
-	/* this can be simplified quite a bit.  Look */
-	/* at tcp.c:tcp_ack to see how. */
-	if (skb->next != NULL) {
-		int i;
-
-		if (skb->next != skb) {
-			skb->next->prev = skb->prev;
-			skb->prev->next = skb->next;
-
-			if (skb == arp_q) {
-				if (skb->magic != ARP_QUEUE_MAGIC) {
-					sti();
-					printk("sock.c: destroy_sock skb on arp queue with"
-						"bas magic(%X)\n", skb->magic);
-					cli();
-					arp_q = NULL;
-					continue;
-				}
-				arp_q = skb->next;
-			} else {
-				for(i = 0; i < DEV_NUMBUFFS; i++) {
-					if (skb->dev &&
-					    skb->dev->buffs[i] == skb) {
-						if (skb->magic != DEV_QUEUE_MAGIC) {
-							sti();
-							printk("sock.c: destroy sock skb on dev queue"
-								"with bad magic(%X)\n", skb->magic);
-							cli();
-							break;
-						}
-						skb->dev->buffs[i]= skb->next;
-						break;
-					}
-				}
-			}
-		} else {
-			if (skb == arp_q) {
-				if (skb->magic != ARP_QUEUE_MAGIC) {
-					sti();
-					printk("sock.c: destroy_sock skb on arp queue with"
-						"bas magic(%X)\n", skb->magic);
-					cli();
-				}
-				arp_q = NULL;
-			} else {
-				for(i = 0; i < DEV_NUMBUFFS; i++) {
-					if (skb->dev &&
-					    skb->dev->buffs[i] == skb) {
-			    			if (skb->magic != DEV_QUEUE_MAGIC) {
-							sti();
-							printk("sock.c: destroy sock skb on dev queue"
-								"with bad magic(%X)\n", skb->magic);
-							cli();
-							break;
-			      			}
-						skb->dev->buffs[i]= NULL;
-						break;
-					}
-				}
-			}
-		}
-	}
-	skb->dev = NULL;
-	sti();
-	skb2 = (struct sk_buff *)skb->link3;
-	kfree_skb(skb, FREE_WRITE);
-	skb = skb2;
-  }
-  sk->send_head = NULL;
-
-  /* And now the backlog. */
-  if (sk->back_log != NULL) {
-	/* this should never happen. */
-	printk("cleaning back_log. \n");
-	cli();
-	skb = (struct sk_buff *)sk->back_log;
-	do {
+  	for(skb = sk->send_head; skb != NULL; ) 
+  	{
 		struct sk_buff *skb2;
 
-		skb2 = (struct sk_buff *)skb->next;
-		kfree_skb(skb, FREE_READ);
+		/*
+		 * We need to remove skb from the transmit queue,
+		 * or maybe the arp queue.
+		 */
+		cli();
+		/* see if it's in a transmit queue. */
+		/* this can be simplified quite a bit.  Look */
+		/* at tcp.c:tcp_ack to see how. */
+		if (skb->next != NULL) 
+		{
+			IS_SKB(skb);
+			skb_unlink(skb);
+		}
+		skb->dev = NULL;
+		sti();
+		skb2 = (struct sk_buff *)skb->link3;
+		kfree_skb(skb, FREE_WRITE);
 		skb = skb2;
-	} while(skb != sk->back_log);
-	sti();
-  }
-  sk->back_log = NULL;
+  	}	
+  	sk->send_head = NULL;
+
+  	/* And now the backlog. */
+  	if (sk->back_log != NULL) 
+  	{
+		/* this should never happen. */
+		printk("cleaning back_log. \n");
+		cli();
+		skb = (struct sk_buff *)sk->back_log;
+		do 
+		{
+			struct sk_buff *skb2;
+	
+			skb2 = (struct sk_buff *)skb->next;
+			kfree_skb(skb, FREE_READ);
+			skb = skb2;
+		}
+		while(skb != sk->back_log);
+		sti();
+	}
+	sk->back_log = NULL;
 
   /* Now if it has a half accepted/ closed socket. */
-  if (sk->pair) {
-	sk->pair->dead = 1;
-	sk->pair->prot->close(sk->pair, 0);
-	sk->pair = NULL;
-  }
+	if (sk->pair) 
+	{
+		sk->pair->dead = 1;
+		sk->pair->prot->close(sk->pair, 0);
+		sk->pair = NULL;
+  	}
 
   /*
    * Now if everything is gone we can free the socket
    * structure, otherwise we need to keep it around until
    * everything is gone.
    */
-  if (sk->rmem_alloc == 0 && sk->wmem_alloc == 0) {
-	kfree_s((void *)sk,sizeof(*sk));
-  } else {
-	/* this should never happen. */
-	/* actually it can if an ack has just been sent. */
-	DPRINTF((DBG_INET, "possible memory leak in socket = %X\n", sk));
-	sk->destroy = 1;
-	sk->ack_backlog = 0;
-	sk->inuse = 0;
-	reset_timer(sk, TIME_DESTROY, SOCK_DESTROY_TIME);
-  }
-  DPRINTF((DBG_INET, "leaving destroy_sock\n"));
+	  if (sk->rmem_alloc == 0 && sk->wmem_alloc == 0) 
+	  {
+		kfree_s((void *)sk,sizeof(*sk));
+	  } 
+	  else 
+	  {
+		/* this should never happen. */
+		/* actually it can if an ack has just been sent. */
+		DPRINTF((DBG_INET, "possible memory leak in socket = %X\n", sk));
+		sk->destroy = 1;
+		sk->ack_backlog = 0;
+		sk->inuse = 0;
+		reset_timer(sk, TIME_DESTROY, SOCK_DESTROY_TIME);
+  	}
+  	DPRINTF((DBG_INET, "leaving destroy_sock\n"));
 }
 
 
@@ -511,138 +475,234 @@ inet_fcntl(struct socket *sock, unsigned int cmd, unsigned long arg)
   }
 }
 
-
-static int
-inet_setsockopt(struct socket *sock, int level, int optname,
+/*
+ *	Set socket options on an inet socket.
+ */
+ 
+static int inet_setsockopt(struct socket *sock, int level, int optname,
 		    char *optval, int optlen)
 {
-  struct sock *sk;
-  int val;
-
-  /* This should really pass things on to the other levels. */
-  if (level != SOL_SOCKET) return(-EOPNOTSUPP);
-
-  sk = (struct sock *) sock->data;
-  if (sk == NULL) {
-	printk("Warning: sock->data = NULL: %d\n" ,__LINE__);
-	return(0);
-  }
-  if (optval == NULL) return(-EINVAL);
-
-  /* verify_area(VERIFY_WRITE, optval, sizeof(int));*/
-  val = get_fs_long((unsigned long *)optval);
-  switch(optname) {
-	case SO_TYPE:
-	case SO_ERROR:
-	  	return(-ENOPROTOOPT);
-
-	case SO_DEBUG:	/* not implemented. */
-	case SO_DONTROUTE:
-	case SO_BROADCAST:
-	case SO_SNDBUF:
-	case SO_RCVBUF:
-		return(0);
-
-	case SO_REUSEADDR:
-		if (val) sk->reuse = 1;
-		  else sk->reuse = 0;
-		return(0);
-
-	case SO_KEEPALIVE:
-		if (val) sk->keepopen = 1;
-		  else sk->keepopen = 0;
-		return(0);
-
-	 case SO_OOBINLINE:
-		if (val) sk->urginline = 1;
-		  else sk->urginline = 0;
-		return(0);
-
-	 case SO_NO_CHECK:
-		if (val) sk->no_check = 1;
-		  else sk->no_check = 0;
-		return(0);
-
-	 case SO_PRIORITY:
-		if (val >= 0 && val < DEV_NUMBUFFS) {
-			sk->priority = val;
-		} else {
-			return(-EINVAL);
-		}
-		return(0);
-
-	default:
-	  	return(-ENOPROTOOPT);
-  }
+  	struct sock *sk = (struct sock *) sock->data;  
+	if (level == SOL_SOCKET)
+		return sock_setsockopt(sk,level,optname,optval,optlen);
+	if (sk->prot->setsockopt==NULL)
+		return(-EOPNOTSUPP);
+	else
+		return sk->prot->setsockopt(sk,level,optname,optval,optlen);
 }
 
 
-static int
-inet_getsockopt(struct socket *sock, int level, int optname,
+
+
+static int inet_getsockopt(struct socket *sock, int level, int optname,
 		    char *optval, int *optlen)
 {
-  struct sock *sk;
-  int val;
-
-  /* This should really pass things on to the other levels. */
-  if (level != SOL_SOCKET) return(-EOPNOTSUPP);
-
-  sk = (struct sock *) sock->data;
-  if (sk == NULL) {
-	printk("Warning: sock->data = NULL: %d\n" ,__LINE__);
-	return(0);
-  }
-
-  switch(optname) {
-	case SO_DEBUG:		/* not implemented. */
-	case SO_DONTROUTE:
-	case SO_BROADCAST:
-	case SO_SNDBUF:
-	case SO_RCVBUF:
-		val = 0;
-		break;
-
-	case SO_REUSEADDR:
-		val = sk->reuse;
-		break;
-
-	case SO_KEEPALIVE:
-		val = sk->keepopen;
-		break;
-
-	case SO_TYPE:
-		if (sk->prot == &tcp_prot) val = SOCK_STREAM;
-		  else val = SOCK_DGRAM;
-		break;
-
-	case SO_ERROR:
-		val = sk->err;
-		sk->err = 0;
-		break;
-
-	case SO_OOBINLINE:
-		val = sk->urginline;
-		break;
-
-	case SO_NO_CHECK:
-		val = sk->no_check;
-		break;
-
-	case SO_PRIORITY:
-		val = sk->priority;
-		break;
-
-	default:
-		return(-ENOPROTOOPT);
-  }
-  verify_area(VERIFY_WRITE, optlen, sizeof(int));
-  put_fs_long(sizeof(int),(unsigned long *) optlen);
-
-  verify_area(VERIFY_WRITE, optval, sizeof(int));
-  put_fs_long(val,(unsigned long *)optval);
-
-  return(0);
+  	struct sock *sk = sock->data;  	
+  	if (level == SOL_SOCKET) 
+  		return sock_getsockopt(sk,level,optname,optval,optlen);
+  	if(sk->prot->getsockopt==NULL)  	
+  		return(-EOPNOTSUPP);
+  	else
+  		return sk->prot->getsockopt(sk,level,optname,optval,optlen);
 }
+
+/*
+ *	This is meant for all protocols to use and covers goings on
+ *	at the socket level. Everything here is generic.
+ */
+
+int sock_setsockopt(struct sock *sk, int level, int optname,
+		char *optval, int optlen)
+{
+	int val;
+	int err;
+	struct linger ling;
+
+  	if (optval == NULL) 
+  		return(-EINVAL);
+
+  	err=verify_area(VERIFY_READ, optval, sizeof(int));
+  	if(err)
+  		return err;
+  	
+  	val = get_fs_long((unsigned long *)optval);
+  	switch(optname) 
+  	{
+		case SO_TYPE:
+		case SO_ERROR:
+		  	return(-ENOPROTOOPT);
+
+		case SO_DEBUG:	
+			sk->debug=val?1:0;
+		case SO_DONTROUTE:	/* Still to be implemented */
+			return(0);
+		case SO_BROADCAST:
+			sk->broadcast=val?1:0;
+			return 0;
+		case SO_SNDBUF:
+			if(val>32767)
+				val=32767;
+			if(val<256)
+				val=256;
+			sk->sndbuf=val;
+			return 0;
+		case SO_LINGER:
+			err=verify_area(VERIFY_READ,optval,sizeof(ling));
+			if(err)
+				return err;
+			memcpy_fromfs(&ling,optval,sizeof(ling));
+			if(ling.l_onoff==0)
+				sk->linger=0;
+			else
+			{
+				sk->lingertime=ling.l_linger;
+				sk->linger=1;
+			}
+			return 0;
+		case SO_RCVBUF:
+			if(val>32767)
+				val=32767;
+			if(val<256)
+				val=256;
+			sk->rcvbuf=val;
+			return(0);
+
+		case SO_REUSEADDR:
+			if (val) 
+				sk->reuse = 1;
+			else 
+				sk->reuse = 0;
+			return(0);
+
+		case SO_KEEPALIVE:
+			if (val)
+				sk->keepopen = 1;
+			else 
+				sk->keepopen = 0;
+			return(0);
+
+	 	case SO_OOBINLINE:
+			if (val) 
+				sk->urginline = 1;
+			else 
+				sk->urginline = 0;
+			return(0);
+
+	 	case SO_NO_CHECK:
+			if (val) 
+				sk->no_check = 1;
+			else 
+				sk->no_check = 0;
+			return(0);
+
+		 case SO_PRIORITY:
+			if (val >= 0 && val < DEV_NUMBUFFS) 
+			{
+				sk->priority = val;
+			} 
+			else 
+			{
+				return(-EINVAL);
+			}
+			return(0);
+
+		default:
+		  	return(-ENOPROTOOPT);
+  	}
+}
+
+
+int sock_getsockopt(struct sock *sk, int level, int optname,
+		   char *optval, int *optlen)
+{		
+  	int val;
+  	int err;
+  	struct linger ling;
+
+  	switch(optname) 
+  	{
+		case SO_DEBUG:		
+			val = sk->debug;
+			break;
+		
+		case SO_DONTROUTE:	/* One last option to implement */
+			val = 0;
+			break;
+		
+		case SO_BROADCAST:
+			val= sk->broadcast;
+			break;
+		
+		case SO_LINGER:	
+			err=verify_area(VERIFY_WRITE,optval,sizeof(ling));
+			if(err)
+				return err;
+			err=verify_area(VERIFY_WRITE,optlen,sizeof(int));
+			if(err)
+				return err;
+			put_fs_long(sizeof(ling),(unsigned long *)optlen);
+			ling.l_onoff=sk->linger;
+			ling.l_linger=sk->lingertime;
+			memcpy_tofs(optval,&ling,sizeof(ling));
+			return 0;
+		
+		case SO_SNDBUF:
+			val=sk->sndbuf;
+			break;
+		
+		case SO_RCVBUF:
+			val =sk->rcvbuf;
+			break;
+
+		case SO_REUSEADDR:
+			val = sk->reuse;
+			break;
+
+		case SO_KEEPALIVE:
+			val = sk->keepopen;
+			break;
+
+		case SO_TYPE:
+			if (sk->prot == &tcp_prot) 
+				val = SOCK_STREAM;
+		  	else 
+		  		val = SOCK_DGRAM;
+			break;
+
+		case SO_ERROR:
+			val = sk->err;
+			sk->err = 0;
+			break;
+
+		case SO_OOBINLINE:
+			val = sk->urginline;
+			break;
+	
+		case SO_NO_CHECK:
+			val = sk->no_check;
+			break;
+
+		case SO_PRIORITY:
+			val = sk->priority;
+			break;
+
+		default:
+			return(-ENOPROTOOPT);
+	}
+	err=verify_area(VERIFY_WRITE, optlen, sizeof(int));
+	if(err)
+  		return err;
+  	put_fs_long(sizeof(int),(unsigned long *) optlen);
+
+  	err=verify_area(VERIFY_WRITE, optval, sizeof(int));
+  	if(err)
+  		return err;
+  	put_fs_long(val,(unsigned long *)optval);
+
+  	return(0);
+}
+
+
 
 
 static int
@@ -673,6 +733,23 @@ inet_listen(struct socket *sock, int backlog)
   return(0);
 }
 
+/*
+ *	Default callbacks for user INET sockets. These just wake up
+ *	the user owning the socket.
+ */
+
+static void def_callback1(struct sock *sk)
+{
+	if(!sk->dead)
+		wake_up_interruptible(sk->sleep);
+}
+
+static void def_callback2(struct sock *sk,int len)
+{
+	if(!sk->dead)
+		wake_up_interruptible(sk->sleep);
+}
+
 
 static int
 inet_create(struct socket *sock, int protocol)
@@ -682,9 +759,10 @@ inet_create(struct socket *sock, int protocol)
   int err;
 
   sk = (struct sock *) kmalloc(sizeof(*sk), GFP_KERNEL);
-  if (sk == NULL) return(-ENOMEM);
+  if (sk == NULL) 
+  	return(-ENOMEM);
   sk->num = 0;
-
+  sk->reuse = 0;
   switch(sock->type) {
 	case SOCK_STREAM:
 	case SOCK_SEQPACKET:
@@ -692,6 +770,7 @@ inet_create(struct socket *sock, int protocol)
 			kfree_s((void *)sk, sizeof(*sk));
 			return(-EPROTONOSUPPORT);
 		}
+		protocol = IPPROTO_TCP;
 		sk->no_check = TCP_NO_CHECK;
 		prot = &tcp_prot;
 		break;
@@ -701,6 +780,7 @@ inet_create(struct socket *sock, int protocol)
 			kfree_s((void *)sk, sizeof(*sk));
 			return(-EPROTONOSUPPORT);
 		}
+		protocol = IPPROTO_UDP;
 		sk->no_check = UDP_NO_CHECK;
 		prot=&udp_prot;
 		break;
@@ -744,9 +824,18 @@ inet_create(struct socket *sock, int protocol)
 		kfree_s((void *)sk, sizeof(*sk));
 		return(-ESOCKTNOSUPPORT);
   }
+  sk->socket = sock;
+#ifdef CONFIG_TCP_NAGLE_OFF
+  sk->nonagle = 1;
+#else    
+  sk->nonagle = 0;
+#endif  
+  sk->type = sock->type;
   sk->protocol = protocol;
   sk->wmem_alloc = 0;
   sk->rmem_alloc = 0;
+  sk->sndbuf = SK_WMEM_MAX;
+  sk->rcvbuf = SK_RMEM_MAX;
   sk->pair = NULL;
   sk->opt = NULL;
   sk->send_seq = 0;
@@ -754,22 +843,25 @@ inet_create(struct socket *sock, int protocol)
   sk->copied_seq = 0;
   sk->fin_seq = 0;
   sk->proc = 0;
-  sk->rtt = TCP_WRITE_TIME;
+  sk->rtt = TCP_WRITE_TIME << 3;
+  sk->rto = TCP_WRITE_TIME;
   sk->mdev = 0;
   sk->backoff = 0;
   sk->packets_out = 0;
   sk->cong_window = 1; /* start with only sending one packet at a time. */
-  sk->exp_growth = 1;  /* if set cong_window grow exponentially every time
-			  we get an ack. */
+  sk->cong_count = 0;
+  sk->ssthresh = 0;
+  sk->max_window = 0;
   sk->urginline = 0;
   sk->intr = 0;
   sk->linger = 0;
   sk->destroy = 0;
-  sk->reuse = 0;
+
   sk->priority = 1;
   sk->shutdown = 0;
   sk->urg = 0;
   sk->keepopen = 0;
+  sk->zapped = 0;
   sk->done = 0;
   sk->ack_backlog = 0;
   sk->window = 0;
@@ -777,8 +869,9 @@ inet_create(struct socket *sock, int protocol)
   sk->state = TCP_CLOSE;
   sk->dead = 0;
   sk->ack_timed = 0;
-  sk->send_tmp = NULL;
-  sk->mss = 0; /* we will try not to send any packets smaller than this. */
+  sk->partial = NULL;
+  sk->user_mss = 0;
+  sk->debug = 0;
 
   /* this is how many unacked bytes we will accept for this socket.  */
   sk->max_unacked = 2048; /* needs to be at most 2 full packets. */
@@ -802,6 +895,7 @@ inet_create(struct socket *sock, int protocol)
   sk->send_tail = NULL;
   sk->send_head = NULL;
   sk->timeout = 0;
+  sk->broadcast = 0;
   sk->timer.data = (unsigned long)sk;
   sk->timer.function = &net_timer;
   sk->back_log = NULL;
@@ -818,6 +912,14 @@ inet_create(struct socket *sock, int protocol)
   sk->dummy_th.ack = 0;
   sk->dummy_th.urg = 0;
   sk->dummy_th.dest = 0;
+
+  sk->ip_tos=0;
+  sk->ip_ttl=64;
+  	
+  sk->state_change = def_callback1;
+  sk->data_ready = def_callback2;
+  sk->write_space = def_callback1;
+  sk->error_report = def_callback1;
 
   if (sk->num) {
 	/*
@@ -859,7 +961,7 @@ inet_release(struct socket *sock, struct socket *peer)
   if (sk == NULL) return(0);
 
   DPRINTF((DBG_INET, "inet_release(sock = %X, peer = %X)\n", sock, peer));
-  wake_up(sk->sleep);
+  sk->state_change(sk);
 
   /* Start closing the connection.  This may take a while. */
   /*
@@ -874,13 +976,17 @@ inet_release(struct socket *sock, struct socket *peer)
 	DPRINTF((DBG_INET, "sk->linger set.\n"));
 	sk->prot->close(sk, 0);
 	cli();
-	while(sk->state != TCP_CLOSE) {
+	if (sk->lingertime)
+		current->timeout = jiffies + HZ*sk->lingertime;
+	while(sk->state != TCP_CLOSE && current->timeout>0) {
 		interruptible_sleep_on(sk->sleep);
 		if (current->signal & ~current->blocked) {
 			sti();
+			current->timeout=0;
 			return(-ERESTARTSYS);
 		}
 	}
+	current->timeout=0;
 	sti();
 	sk->dead = 1;
   }
@@ -905,6 +1011,7 @@ inet_bind(struct socket *sock, struct sockaddr *uaddr,
   struct sockaddr_in addr;
   struct sock *sk, *sk2;
   unsigned short snum;
+  int err;
 
   sk = (struct sock *) sock->data;
   if (sk == NULL) {
@@ -916,18 +1023,10 @@ inet_bind(struct socket *sock, struct sockaddr *uaddr,
   if (sk->state != TCP_CLOSE) return(-EIO);
   if (sk->num != 0) return(-EINVAL);
 
-  /* verify_area(VERIFY_WRITE, uaddr, addr_len);*/
+  err=verify_area(VERIFY_READ, uaddr, addr_len);
+  if(err)
+  	return err;
   memcpy_fromfs(&addr, uaddr, min(sizeof(addr), addr_len));
-
-#if 0	/* FIXME: */
-  if (addr.sin_family && addr.sin_family != AF_INET) {
-	/*
-	 * This is really a bug in BSD which we need
-	 * to emulate because ftp expects it.
-	 */
-	return(-EINVAL);
-  }
-#endif
 
   snum = ntohs(addr.sin_port);
   DPRINTF((DBG_INET, "bind sk =%X to port = %d\n", sk, snum));
@@ -939,11 +1038,13 @@ inet_bind(struct socket *sock, struct sockaddr *uaddr,
    * be a bug here, we will leave it if the port is not privileged.
    */
   if (snum == 0) {
-/*	if (sk->num > PROT_SOCK) return(0); */
 	snum = get_new_socknum(sk->prot, 0);
   }
-  if (snum <= PROT_SOCK && !suser()) return(-EACCES);
+  if (snum < PROT_SOCK && !suser()) return(-EACCES);
 
+  if (addr.sin_addr.s_addr!=0 && chk_addr(addr.sin_addr.s_addr)!=IS_MYADDR)
+  	return(-EADDRNOTAVAIL);	/* Source address MUST be ours! */
+  	
   if (chk_addr(addr.sin_addr.s_addr) || addr.sin_addr.s_addr == 0)
 					sk->saddr = addr.sin_addr.s_addr;
 
@@ -999,16 +1100,29 @@ inet_connect(struct socket *sock, struct sockaddr * uaddr,
 	return(0);
   }
 
+  if (sock->state == SS_CONNECTING && sk->state == TCP_ESTABLISHED)
+  {
+	sock->state = SS_CONNECTED;
+  /* Connection completing after a connect/EINPROGRESS/select/connect */
+	return 0;	/* Rock and roll */
+  }
+
+  if (sock->state == SS_CONNECTING && sk->protocol == IPPROTO_TCP &&
+  	(flags & O_NONBLOCK))
+  	return -EALREADY;	/* Connecting is currently in progress */
+  	
   if (sock->state != SS_CONNECTING) {
 	/* We may need to bind the socket. */
 	if (sk->num == 0) {
 		sk->num = get_new_socknum(sk->prot, 0);
-		if (sk->num == 0) return(-EAGAIN);
+		if (sk->num == 0) 
+			return(-EAGAIN);
 		put_sock(sk->num, sk);
 		sk->dummy_th.source = htons(sk->num);
 	}
 
-	if (sk->prot->connect == NULL) return(-EOPNOTSUPP);
+	if (sk->prot->connect == NULL) 
+		return(-EOPNOTSUPP);
   
 	err = sk->prot->connect(sk, (struct sockaddr_in *)uaddr, addr_len);
 	if (err < 0) return(err);
@@ -1016,14 +1130,26 @@ inet_connect(struct socket *sock, struct sockaddr * uaddr,
 	sock->state = SS_CONNECTING;
   }
 
-  if (sk->state != TCP_ESTABLISHED &&(flags & O_NONBLOCK)) return(-EINPROGRESS);
+  if (sk->state != TCP_ESTABLISHED &&(flags & O_NONBLOCK)) 
+  	return(-EINPROGRESS);
 
   cli(); /* avoid the race condition */
-  while(sk->state == TCP_SYN_SENT || sk->state == TCP_SYN_RECV) {
+  while(sk->state == TCP_SYN_SENT || sk->state == TCP_SYN_RECV) 
+  {
 	interruptible_sleep_on(sk->sleep);
 	if (current->signal & ~current->blocked) {
 		sti();
 		return(-ERESTARTSYS);
+	}
+	/* This fixes a nasty in the tcp/ip code. There is a hideous hassle with
+	   icmp error packets wanting to close a tcp or udp socket. */
+	if(sk->err && sk->protocol == IPPROTO_TCP)
+	{
+		sti();
+		sock->state = SS_UNCONNECTED;
+		err = -sk->err;
+		sk->err=0;
+		return err; /* set by tcp_err() */
 	}
   }
   sti();
@@ -1031,7 +1157,9 @@ inet_connect(struct socket *sock, struct sockaddr * uaddr,
 
   if (sk->state != TCP_ESTABLISHED && sk->err) {
 	sock->state = SS_UNCONNECTED;
-	return(-sk->err);
+	err=sk->err;
+	sk->err=0;
+	return(-err);
   }
   return(0);
 }
@@ -1048,6 +1176,7 @@ static int
 inet_accept(struct socket *sock, struct socket *newsock, int flags)
 {
   struct sock *sk1, *sk2;
+  int err;
 
   sk1 = (struct sock *) sock->data;
   if (sk1 == NULL) {
@@ -1074,7 +1203,9 @@ inet_accept(struct socket *sock, struct socket *newsock, int flags)
 	if (sk2 == NULL) {
 		if (sk1->err <= 0)
 			printk("Warning sock.c:sk1->err <= 0.  Returning non-error.\n");
-		return(-sk1->err);
+		err=sk1->err;
+		sk1->err=0;
+		return(-err);
 	}
   }
   newsock->data = (void *)sk2;
@@ -1096,9 +1227,9 @@ inet_accept(struct socket *sock, struct socket *newsock, int flags)
   sti();
 
   if (sk2->state != TCP_ESTABLISHED && sk2->err > 0) {
-	int err;
 
 	err = -sk2->err;
+	sk2->err=0;
 	destroy_sock(sk2);
 	newsock->data = NULL;
 	return(err);
@@ -1115,9 +1246,19 @@ inet_getname(struct socket *sock, struct sockaddr *uaddr,
   struct sockaddr_in sin;
   struct sock *sk;
   int len;
-
-  len = get_fs_long(uaddr_len);
-
+  int err;
+  
+  
+  err = verify_area(VERIFY_WRITE,uaddr_len,sizeof(long));
+  if(err)
+  	return err;
+  	
+  len=get_fs_long(uaddr_len);
+  
+  err = verify_area(VERIFY_WRITE, uaddr, len);
+  if(err)
+  	return err;
+  	
   /* Check this error. */
   if (len < sizeof(sin)) return(-EINVAL);
 
@@ -1137,9 +1278,9 @@ inet_getname(struct socket *sock, struct sockaddr *uaddr,
 	  else sin.sin_addr.s_addr = sk->saddr;
   }
   len = sizeof(sin);
-  verify_area(VERIFY_WRITE, uaddr, len);
+/*  verify_area(VERIFY_WRITE, uaddr, len); NOW DONE ABOVE */
   memcpy_tofs(uaddr, &sin, sizeof(sin));
-  verify_area(VERIFY_WRITE, uaddr_len, sizeof(len));
+/*  verify_area(VERIFY_WRITE, uaddr_len, sizeof(len)); NOW DONE ABOVE */
   put_fs_long(len, uaddr_len);
   return(0);
 }
@@ -1354,6 +1495,7 @@ static int
 inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 {
   struct sock *sk;
+  int err;
 
   DPRINTF((DBG_INET, "INET: in inet_ioctl\n"));
   sk = NULL;
@@ -1365,13 +1507,18 @@ inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
   switch(cmd) {
 	case FIOSETOWN:
 	case SIOCSPGRP:
+		err=verify_area(VERIFY_READ,(int *)arg,sizeof(long));
+		if(err)
+			return err;
 		if (sk)
 			sk->proc = get_fs_long((int *) arg);
 		return(0);
 	case FIOGETOWN:
 	case SIOCGPGRP:
 		if (sk) {
-			verify_area(VERIFY_WRITE,(void *) arg, sizeof(long));
+			err=verify_area(VERIFY_WRITE,(void *) arg, sizeof(long));
+			if(err)
+				return err;
 			put_fs_long(sk->proc,(int *)arg);
 		}
 		return(0);
@@ -1412,6 +1559,7 @@ inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	case SIOCGIFMTU:
 	case SIOCSIFMTU:
 	case SIOCSIFLINK:
+	case SIOCGIFHWADDR:
 		return(dev_ioctl(cmd,(void *) arg));
 
 	default:
@@ -1423,31 +1571,31 @@ inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 }
 
 
-void *
+struct sk_buff *
 sock_wmalloc(struct sock *sk, unsigned long size, int force,
 	     int priority)
 {
   if (sk) {
-	if (sk->wmem_alloc + size < SK_WMEM_MAX || force) {
+	if (sk->wmem_alloc + size < sk->sndbuf || force) {
 		cli();
 		sk->wmem_alloc+= size;
 		sti();
-		return(kmalloc(size, priority));
+		return(alloc_skb(size, priority));
 	}
 	DPRINTF((DBG_INET, "sock_wmalloc(%X,%d,%d,%d) returning NULL\n",
 						sk, size, force, priority));
 	return(NULL);
   }
-  return(kmalloc(size, priority));
+  return(alloc_skb(size, priority));
 }
 
 
-void *
+struct sk_buff *
 sock_rmalloc(struct sock *sk, unsigned long size, int force, int priority)
 {
   if (sk) {
-	if (sk->rmem_alloc + size < SK_RMEM_MAX || force) {
-		void *c = kmalloc(size, priority);
+	if (sk->rmem_alloc + size < sk->rcvbuf || force) {
+		void *c = alloc_skb(size, priority);
 		cli();
 		if (c) sk->rmem_alloc += size;
 		sti();
@@ -1457,7 +1605,7 @@ sock_rmalloc(struct sock *sk, unsigned long size, int force, int priority)
 						sk,size,force, priority));
 	return(NULL);
   }
-  return(kmalloc(size, priority));
+  return(alloc_skb(size, priority));
 }
 
 
@@ -1467,8 +1615,8 @@ sock_rspace(struct sock *sk)
   int amt;
 
   if (sk != NULL) {
-	if (sk->rmem_alloc >= SK_RMEM_MAX-2*MIN_WINDOW) return(0);
-	amt = min((SK_RMEM_MAX-sk->rmem_alloc)/2-MIN_WINDOW, MAX_WINDOW);
+	if (sk->rmem_alloc >= sk->rcvbuf-2*MIN_WINDOW) return(0);
+	amt = min((sk->rcvbuf-sk->rmem_alloc)/2-MIN_WINDOW, MAX_WINDOW);
 	if (amt < 0) return(0);
 	return(amt);
   }
@@ -1481,8 +1629,8 @@ sock_wspace(struct sock *sk)
 {
   if (sk != NULL) {
 	if (sk->shutdown & SEND_SHUTDOWN) return(0);
-	if (sk->wmem_alloc >= SK_WMEM_MAX) return(0);
-	return(SK_WMEM_MAX-sk->wmem_alloc );
+	if (sk->wmem_alloc >= sk->sndbuf) return(0);
+	return(sk->sndbuf-sk->wmem_alloc );
   }
   return(0);
 }
@@ -1493,17 +1641,16 @@ sock_wfree(struct sock *sk, void *mem, unsigned long size)
 {
   DPRINTF((DBG_INET, "sock_wfree(sk=%X, mem=%X, size=%d)\n", sk, mem, size));
 
-  kfree_s(mem, size);
+  IS_SKB(mem);
+  kfree_skbmem(mem, size);
   if (sk) {
 	sk->wmem_alloc -= size;
 
 	/* In case it might be waiting for more memory. */
-	if (!sk->dead) wake_up(sk->sleep);
+	if (!sk->dead) sk->write_space(sk);
 	if (sk->destroy && sk->wmem_alloc == 0 && sk->rmem_alloc == 0) {
 		DPRINTF((DBG_INET,
-			"recovered lost memory, destroying sock = %X\n", sk));
-		delete_timer(sk);
-		kfree_s((void *)sk, sizeof(*sk));
+			"recovered lost memory, sock = %X\n", sk));
 	}
 	return;
   }
@@ -1514,13 +1661,13 @@ void
 sock_rfree(struct sock *sk, void *mem, unsigned long size)
 {
   DPRINTF((DBG_INET, "sock_rfree(sk=%X, mem=%X, size=%d)\n", sk, mem, size));
-
-  kfree_s(mem, size);
+  IS_SKB(mem);
+  kfree_skbmem(mem, size);
   if (sk) {
 	sk->rmem_alloc -= size;
 	if (sk->destroy && sk->wmem_alloc == 0 && sk->rmem_alloc == 0) {
-		delete_timer(sk);
-		kfree_s((void *)sk, sizeof(*sk));
+		DPRINTF((DBG_INET,
+			"recovered lot memory, sock = %X\n", sk));
 	}
   }
 }
@@ -1550,18 +1697,21 @@ struct sock *get_sock(struct proto *prot, unsigned short num,
    * socket number when we choose an arbitrary one.
    */
   for(s = prot->sock_array[hnum & (SOCK_ARRAY_SIZE - 1)];
-      s != NULL; s = s->next) {
-	if (s->num == hnum) {
-		/* We need to see if this is the socket that we want. */
-		if (ip_addr_match(s->daddr, raddr) == 0) continue;
-		if (s->dummy_th.dest != rnum && s->dummy_th.dest != 0) continue;
-#if 1	/* C.E. Hawkins  ceh@eng.cam.ac.uk */
-		if (s->prot != &udp_prot || prot != &udp_prot)
-#endif
-			if (ip_addr_match(s->saddr, laddr) == 0) continue;
-		if (s->dead && (s->state == TCP_CLOSE)) continue;
-		return(s);
-	}
+      s != NULL; s = s->next) 
+  {
+	if (s->num != hnum) 
+		continue;
+	if(s->dead && (s->state == TCP_CLOSE))
+		continue;
+	if(prot == &udp_prot)
+		return s;
+	if(ip_addr_match(s->daddr,raddr)==0)
+		continue;
+	if (s->dummy_th.dest != rnum && s->dummy_th.dest != 0) 
+		continue;
+	if(ip_addr_match(s->saddr,laddr) == 0)
+		continue;
+	return(s);
   }
   return(NULL);
 }
@@ -1574,7 +1724,7 @@ void release_sock(struct sock *sk)
 	return;
   }
   if (!sk->prot) {
-	printk("sock.c: release_sock sk->prot == NULL\n");
+/*	printk("sock.c: release_sock sk->prot == NULL\n"); */
 	return;
   }
 
@@ -1650,6 +1800,8 @@ inet_fioctl(struct inode *inode, struct file *file,
 }
 
 
+
+
 static struct file_operations inet_fops = {
   NULL,		/* LSEEK	*/
   NULL,		/* READ		*/
@@ -1697,6 +1849,7 @@ void inet_proto_init(struct ddi_proto *pro)
   struct inet_protocol *p;
   int i;
 
+  printk("Swansea University Computer Society Net2Debugged [1.27]\n");
   /* Set up our UNIX VFS major device. */
   if (register_chrdev(AF_INET_MAJOR, "af_inet", &inet_fops) < 0) {
 	printk("%s: cannot register major device %d!\n",
@@ -1715,11 +1868,13 @@ void inet_proto_init(struct ddi_proto *pro)
 	udp_prot.sock_array[i] = NULL;
 	raw_prot.sock_array[i] = NULL;
   }
+  printk("IP Protocols: ");
   for(p = inet_protocol_base; p != NULL;) {
 	struct inet_protocol *tmp;
 
 	tmp = (struct inet_protocol *) p->next;
 	inet_add_protocol(p);
+	printk("%s%s",p->name,tmp?", ":"\n");
 	p = tmp;
   }
 

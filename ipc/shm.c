@@ -11,6 +11,7 @@
 #include <linux/ipc.h> 
 #include <linux/shm.h>
 #include <linux/stat.h>
+#include <linux/malloc.h>
 
 extern int ipcperms (struct ipc_perm *ipcp, short semflg);
 extern unsigned int get_swap_page(void);
@@ -22,10 +23,11 @@ static void killseg (int id);
 static int shm_tot = 0;  /* total number of shared memory pages */
 static int shm_rss = 0; /* number of shared memory pages that are in memory */
 static int shm_swp = 0; /* number of shared memory pages that are in swap */
-static int shm_seq = 0; /* is incremented, for recognizing stale ids */
 static int max_shmid = 0; /* every used id is <= max_shmid */
 static struct wait_queue *shm_lock = NULL;
 static struct shmid_ds *shm_segs[SHMMNI];
+
+static unsigned short shm_seq = 0; /* incremented, for recognizing stale ids */
 
 /* some statistics */
 static ulong swap_attempts = 0;
@@ -118,7 +120,7 @@ found:
 	used_segs++;
 	if (shm_lock)
 		wake_up (&shm_lock);
-	return id + shm_seq*SHMMNI;
+	return id + (int)shm_seq*SHMMNI;
 }
 
 int sys_shmget (key_t key, int size, int shmflg)
@@ -164,8 +166,7 @@ static void killseg (int id)
 	}
 	shp->shm_perm.seq++;     /* for shmat */
 	numpages = shp->shm_npages; 
-	if ((int)((++shm_seq + 1) * SHMMNI) < 0)
-		shm_seq = 0;
+	shm_seq++;
 	shm_segs[id] = (struct shmid_ds *) IPC_UNUSED;
 	used_segs--;
 	if (id == max_shmid) 
@@ -596,7 +597,7 @@ void shm_no_page (unsigned long *ptent)
 	}
 
 	if (!(shp->shm_pages[idx] & PAGE_PRESENT)) {
-		if(!(page = __get_free_page(GFP_KERNEL))) {
+		if(!(page = get_free_page(GFP_KERNEL))) {
 			oom(current);
 			*ptent = BAD_PAGE | PAGE_ACCESSED | 7;
 			return;
@@ -681,17 +682,17 @@ int shm_swap (int prio)
 	for (shmd = shp->attaches; shmd; shmd = shmd->seg_next) {
 		unsigned long tmp, *pte;
 		if ((shmd->shm_sgn >> SHM_ID_SHIFT & SHM_ID_MASK) != id) {
-			printk ("shm_swap: id=%d does not match shmd\n", id);
+			printk ("shm_swap: id=%ld does not match shmd\n", id);
 			continue;
 		}
 		tmp = shmd->start + (idx << PAGE_SHIFT);
 		if (tmp >= shmd->end) {
-			printk ("shm_swap: too large idx=%d id=%d PANIC\n",idx, id);
+			printk ("shm_swap: too large idx=%ld id=%ld PANIC\n",idx, id);
 			continue;
 		}
 		pte = PAGE_DIR_OFFSET(shmd->task->tss.cr3,tmp);
 		if (!(*pte & 1)) { 
-			printk("shm_swap: bad pgtbl! id=%d start=%x idx=%d\n", 
+			printk("shm_swap: bad pgtbl! id=%ld start=%lx idx=%ld\n", 
 					id, shmd->start, idx);
 			*pte = 0;
 			continue;

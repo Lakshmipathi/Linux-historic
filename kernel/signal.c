@@ -47,6 +47,39 @@ struct sigcontext_struct {
 	unsigned long cr2;
 };
 
+asmlinkage int sys_sigprocmask(int how, sigset_t *set, sigset_t *oset)
+{
+	sigset_t new_set, old_set = current->blocked;
+	int error;
+
+	if (set) {
+		error = verify_area(VERIFY_READ, set, sizeof(sigset_t));
+		if (error)
+			return error;
+		new_set = get_fs_long((unsigned long *) set) & _BLOCKABLE;
+		switch (how) {
+		case SIG_BLOCK:
+			current->blocked |= new_set;
+			break;
+		case SIG_UNBLOCK:
+			current->blocked &= ~new_set;
+			break;
+		case SIG_SETMASK:
+			current->blocked = new_set;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+	if (oset) {
+		error = verify_area(VERIFY_WRITE, oset, sizeof(sigset_t));
+		if (error)
+			return error;
+		put_fs_long(old_set, (unsigned long *) oset);
+	}
+	return 0;
+}
+
 asmlinkage int sys_sgetmask(void)
 {
 	return current->blocked;
@@ -219,7 +252,8 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	if (regs->ss != USER_DS)
 		frame = (unsigned long *) sa->sa_restorer;
 	frame -= 32;
-	verify_area(VERIFY_WRITE,frame,32*4);
+	if (verify_area(VERIFY_WRITE,frame,32*4))
+		do_exit(SIGSEGV);
 /* set up the "normal" stack seen by the signal handler (iBCS2) */
 	put_fs_long(__CODE,frame);
 	put_fs_long(signr, frame+1);
@@ -235,8 +269,8 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	put_fs_long(regs->edx, frame+11);
 	put_fs_long(regs->ecx, frame+12);
 	put_fs_long(regs->eax, frame+13);
-	put_fs_long(0, frame+14);		/* trapno - not implemented */
-	put_fs_long(0, frame+15);		/* err - not implemented */
+	put_fs_long(current->tss.trap_no, frame+14);
+	put_fs_long(current->tss.error_code, frame+15);
 	put_fs_long(eip, frame+16);
 	put_fs_long(regs->cs, frame+17);
 	put_fs_long(regs->eflags, frame+18);
@@ -245,7 +279,7 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 	put_fs_long(0,frame+21);		/* 387 state pointer - not implemented*/
 /* non-iBCS2 extensions.. */
 	put_fs_long(oldmask, frame+22);
-	put_fs_long(0, frame+23);		/* cr2 - not implemented */
+	put_fs_long(current->tss.cr2, frame+23);
 /* set up the return code... */
 	put_fs_long(0x0000b858, CODE(0));	/* popl %eax ; movl $,%eax */
 	put_fs_long(0x80cd0000, CODE(4));	/* int $0x80 */
@@ -312,6 +346,8 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 				continue;
 
 			case SIGSTOP: case SIGTSTP: case SIGTTIN: case SIGTTOU:
+				if (current->flags & PF_PTRACED)
+					continue;
 				current->state = TASK_STOPPED;
 				current->exit_code = signr;
 				if (!(current->p_pptr->sigaction[SIGCHLD-1].sa_flags & 
@@ -372,6 +408,7 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		oldmask |= sa->sa_mask;
 	}
 	regs->esp = (unsigned long) frame;
-	regs->eip = eip;			/* "return" to the first handler */
+	regs->eip = eip;		/* "return" to the first handler */
+	current->tss.trap_no = current->tss.error_code = 0;
 	return 1;
 }

@@ -4,10 +4,12 @@
  */
 
 #include <linux/errno.h>
-#include <asm/segment.h>
 #include <linux/sched.h>
 #include <linux/msg.h>
 #include <linux/stat.h>
+#include <linux/malloc.h>
+
+#include <asm/segment.h>
 
 extern int ipcperms (struct ipc_perm *ipcp, short msgflg);
 
@@ -18,7 +20,7 @@ static int findkey (key_t key);
 static struct msqid_ds *msgque[MSGMNI];
 static int msgbytes = 0;
 static int msghdrs = 0;
-static int msg_seq = 0;
+static unsigned short msg_seq = 0;
 static int used_queues = 0;
 static int max_msqid = 0;
 static struct wait_queue *msg_lock = NULL;
@@ -262,7 +264,7 @@ found:
 	used_queues++;
 	if (msg_lock)
 		wake_up (&msg_lock);
-	return msg_seq * MSGMNI + id;
+	return (int) msg_seq * MSGMNI + id;
 }
 
 int sys_msgget (key_t key, int msgflg)
@@ -293,8 +295,7 @@ static void freeque (int id)
 	struct msg *msgp, *msgh;
 
 	msq->msg_perm.seq++;
-	if ((int)((++msg_seq + 1) * MSGMNI) < 0)
-		msg_seq = 0;
+	msg_seq++;
 	msgbytes -= msq->msg_cbytes;
 	if (id == max_msqid)
 		while (max_msqid && (msgque[--max_msqid] == IPC_UNUSED));

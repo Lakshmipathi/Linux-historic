@@ -22,6 +22,7 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
+#include <linux/major.h>
 #include <linux/string.h>
 #include <linux/locks.h>
 #include <linux/errno.h>
@@ -44,6 +45,8 @@ extern int check_cdu31a_media_change(int, int);
 #ifdef CONFIG_MCD
 extern int check_mcd_media_change(int, int);
 #endif
+
+static int grow_buffers(int pri, int size);
 
 static struct buffer_head * hash_table[NR_HASH];
 static struct buffer_head * free_list = NULL;
@@ -220,7 +223,7 @@ void check_disk_change(dev_t dev)
 	struct buffer_head * bh;
 
 	switch(MAJOR(dev)){
-	case 2: /* floppy disc */
+	case FLOPPY_MAJOR:
 		if (!(bh = getblk(dev,0,1024)))
 			return;
 		i = floppy_change(bh);
@@ -228,25 +231,25 @@ void check_disk_change(dev_t dev)
 		break;
 
 #if defined(CONFIG_BLK_DEV_SD) && defined(CONFIG_SCSI)
-         case 8: /* Removable scsi disk */
+         case SCSI_DISK_MAJOR:
 		i = check_scsidisk_media_change(dev, 0);
 		break;
 #endif
 
 #if defined(CONFIG_BLK_DEV_SR) && defined(CONFIG_SCSI)
-         case 11: /* CDROM */
+	 case SCSI_CDROM_MAJOR:
 		i = check_cdrom_media_change(dev, 0);
 		break;
 #endif
 
 #if defined(CONFIG_CDU31A)
-         case 15: /* Sony CDROM */
+         case CDU31A_CDROM_MAJOR:
 		i = check_cdu31a_media_change(dev, 0);
 		break;
 #endif
 
 #if defined(CONFIG_MCD)
-         case 23: /* Sony CDROM */
+         case MITSUMI_CDROM_MAJOR:
 		i = check_mcd_media_change(dev, 0);
 		break;
 #endif
@@ -268,7 +271,7 @@ void check_disk_change(dev_t dev)
 #if defined(CONFIG_BLK_DEV_SD) && defined(CONFIG_SCSI)
 /* This is trickier for a removable hardisk, because we have to invalidate
    all of the partitions that lie on the disk. */
-	if (MAJOR(dev) == 8)
+	if (MAJOR(dev) == SCSI_DISK_MAJOR)
 		revalidate_scsidisk(dev, 0);
 #endif
 }
@@ -456,8 +459,8 @@ repeat:
 	}
 	grow_size -= size;
 	if (nr_free_pages > min_free_pages && grow_size <= 0) {
-		grow_buffers(size);
-		grow_size = PAGE_SIZE;
+		if (grow_buffers(GFP_BUFFER, size))
+			grow_size = PAGE_SIZE;
 	}
 	buffers = nr_buffers;
 	bh = NULL;
@@ -482,13 +485,14 @@ repeat:
 	}
 
 	if (!bh && nr_free_pages > 5) {
-		grow_buffers(size);
-		goto repeat;
+		if (grow_buffers(GFP_BUFFER, size))
+			goto repeat;
 	}
 	
 /* and repeat until we find something good */
 	if (!bh) {
-		sleep_on(&buffer_wait);
+		if (!grow_buffers(GFP_ATOMIC, size))
+			sleep_on(&buffer_wait);
 		goto repeat;
 	}
 	wait_on_buffer(bh);
@@ -502,7 +506,7 @@ repeat:
 /* already have added "this" block to the cache. check it */
 	if (find_buffer(dev,block,size))
 		goto repeat;
-/* OK, FINALLY we know that this buffer is the only one of it's kind, */
+/* OK, FINALLY we know that this buffer is the only one of its kind, */
 /* and that it's unused (b_count=0), unlocked (b_lock=0), and clean */
 	bh->b_count=1;
 	bh->b_dirt=0;
@@ -845,7 +849,7 @@ unsigned long bread_page(unsigned long address, dev_t dev, int b[], int size, in
 		if (b[i])
 			bh[i] = getblk(dev, b[i], size);
 	}
-	read_buffers(bh,4);
+	read_buffers(bh,i);
 	where = address;
  	for (i=0, j=0; j<PAGE_SIZE ; i++, j += size,address += size) {
 		if (bh[i]) {
@@ -861,21 +865,21 @@ unsigned long bread_page(unsigned long address, dev_t dev, int b[], int size, in
  * Try to increase the number of buffers available: the size argument
  * is used to determine what kind of buffers we want.
  */
-void grow_buffers(int size)
+static int grow_buffers(int pri, int size)
 {
 	unsigned long page;
 	struct buffer_head *bh, *tmp;
 
 	if ((size & 511) || (size > PAGE_SIZE)) {
 		printk("VFS: grow_buffers: size = %d\n",size);
-		return;
+		return 0;
 	}
-	if(!(page = __get_free_page(GFP_BUFFER)))
-		return;
+	if(!(page = __get_free_page(pri)))
+		return 0;
 	bh = create_buffers(page, size);
 	if (!bh) {
 		free_page(page);
-		return;
+		return 0;
 	}
 	tmp = bh;
 	while (1) {
@@ -897,7 +901,7 @@ void grow_buffers(int size)
 	}
 	tmp->b_this_page = bh;
 	buffermem += PAGE_SIZE;
-	return;
+	return 1;
 }
 
 /*
@@ -989,7 +993,7 @@ void buffer_init(void)
 	for (i = 0 ; i < NR_HASH ; i++)
 		hash_table[i] = NULL;
 	free_list = 0;
-	grow_buffers(BLOCK_SIZE);
+	grow_buffers(GFP_KERNEL, BLOCK_SIZE);
 	if (!free_list)
 		panic("VFS: Unable to initialize buffer free list!");
 	return;

@@ -41,9 +41,9 @@
 				 * 90 minutes to time out.
 				 */
 
-#define TCP_TIMEOUT_LEN	720000	/* should be about 2 hrs		*/
-#define TCP_TIMEWAIT_LEN 1000	/* how long to wait to sucessfully 
-				 * close the socket, about 60 seconds	*/
+#define TCP_TIMEOUT_LEN	(15*60*HZ) /* should be about 15 mins		*/
+#define TCP_TIMEWAIT_LEN (60*HZ) /* how long to wait to sucessfully 
+				  * close the socket, about 60 seconds	*/
 #define TCP_ACK_TIME	3000	/* time to delay before sending an ACK	*/
 #define TCP_DONE_TIME	250	/* maximum time to wait before actually
 				 * destroying a socket			*/
@@ -62,48 +62,36 @@
 #define TCP_WRITE_QUEUE_MAGIC 0xa5f23477
 
 /*
- * The next routines deal with comparing 32 bit unsigned ints
- * and worry about wraparound. The general strategy is to do a
- * normal compare so long as neither of the numbers is within
- * 4K of wrapping.  Otherwise we must check for the wrap.
+ *	TCP option
  */
-static inline int
-before (unsigned long seq1, unsigned long seq2)
+ 
+#define TCPOPT_NOP		1
+#define TCPOPT_EOL		0
+#define TCPOPT_MSS		2
+
+/*
+ * The next routines deal with comparing 32 bit unsigned ints
+ * and worry about wraparound (automatic with unsigned arithmetic).
+ */
+static inline int before(unsigned long seq1, unsigned long seq2)
 {
-  /* this inequality is strict. */
-  if (seq1 == seq2) return(0);
-
-  if (seq1 < seq2) {
-	if ((unsigned long)seq2-(unsigned long)seq1 < 65536UL) {
-		return(1);
-	} else {
-		return(0);
-	}
-  }
-
-  /*
-   * Now we know seq1 > seq2.  So all we need to do is check
-   * to see if seq1 has wrapped.
-   */
-  if (seq2 < 8192UL && seq1 > (0xffffffffUL - 8192UL)) {
-	return(1);
-  }
-  return(0);
+	/* this inequality is strict. */
+	if (seq1 == seq2)
+		return 0;
+	seq2 -= seq1;
+	return (seq2 < 65536);
 }
 
-
-static inline int
-after(unsigned long seq1, unsigned long seq2)
+static inline int after(unsigned long seq1, unsigned long seq2)
 {
-  return(before(seq2, seq1));
+	return before(seq2, seq1);
 }
 
 
 /* is s2<=s1<=s3 ? */
-static inline int
-between(unsigned long seq1, unsigned long seq2, unsigned long seq3)
+static inline int between(unsigned long seq1, unsigned long seq2, unsigned long seq3)
 {
-  return(after(seq1+1, seq2) && before(seq1, seq3+1));
+	return (after(seq1+1, seq2) && before(seq1, seq3+1));
 }
 
 
@@ -135,6 +123,9 @@ extern int	tcp_rcv(struct sk_buff *skb, struct device *dev,
 			struct inet_protocol *protocol);
 
 extern int	tcp_ioctl(struct sock *sk, int cmd, unsigned long arg);
+
+extern void tcp_enqueue_partial(struct sk_buff *, struct sock *);
+extern struct sk_buff * tcp_dequeue_partial(struct sock *);
 
 
 #endif	/* _TCP_H */

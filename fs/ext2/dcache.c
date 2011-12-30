@@ -1,7 +1,9 @@
 /*
  *  linux/fs/ext2/dcache.c
  *
- *  Copyright (C) 1992, 1993  Remy Card (card@masi.ibp.fr)
+ *  Copyright (C) 1992, 1993, 1994  Remy Card (card@masi.ibp.fr)
+ *                                  Laboratoire MASI - Institut Blaise Pascal
+ *                                  Universite Pierre et Marie Curie (Paris VI)
  *
  */
 
@@ -14,16 +16,17 @@
 
 #include <linux/fs.h>
 #include <linux/ext2_fs.h>
-#include <linux/kernel.h>
 #include <linux/string.h>
 
 #ifndef DONT_USE_DCACHE
+
+#define DCACHE_NAME_LEN	32
 
 struct dir_cache_entry {
 	unsigned short dev;
 	unsigned long dir;
 	unsigned long ino;
-	char name[EXT2_NAME_LEN];
+	char name[DCACHE_NAME_LEN + 1];
 	int len;
 	struct dir_cache_entry * queue_prev;
 	struct dir_cache_entry * queue_next;
@@ -102,7 +105,7 @@ static void show_cache (const char * func_name)
 
 	printk ("%s: cache status\n", func_name);
 	for (p = first; p != NULL; p = p->next)
-		printk ("dev:%04x, dir=%4d, name=%s\n",
+		printk ("dev:%04x, dir=%4lu, name=%s\n",
 			p->dev, p->dir, p->name);
 }
 #endif
@@ -148,6 +151,8 @@ static void remove_from_cache (struct dir_cache_entry * p)
 		p->next->prev = p->prev;
 	else
 		last = p->prev;
+	p->prev = NULL;
+	p->next = NULL;
 }
 
 /*
@@ -163,6 +168,8 @@ static void remove_from_queue (int queue, struct dir_cache_entry * p)
 		p->queue_next->queue_prev = p->queue_prev;
 	else
 		queue_tail[queue] = p->queue_prev;
+	p->queue_prev = NULL;
+	p->queue_next = NULL;
 }
 
 /*
@@ -202,12 +209,12 @@ unsigned long ext2_dcache_lookup (unsigned short dev, unsigned long dir,
 
 	if (!cache_initialized)
 		init_cache ();
-	if (len > EXT2_NAME_LEN)
-		len = EXT2_NAME_LEN;
+	if (len > DCACHE_NAME_LEN)
+		return 0;
 	memcpy (our_name, (char *) name, len);
 	our_name[len] = '\0';
 #ifdef EXT2FS_DEBUG_CACHE
-	printk ("dcache_lookup (%04x, %d, %s, %d)\n", dev, dir, our_name, len);
+	printk ("dcache_lookup (%04x, %lu, %s, %d)\n", dev, dir, our_name, len);
 #endif
 	queue = hash (dev, dir);
 	if ((p = find_name (queue, dev, dir, our_name, len))) {
@@ -221,7 +228,7 @@ unsigned long ext2_dcache_lookup (unsigned short dev, unsigned long dir,
 		}
 #ifdef EXT2FS_DEBUG_CACHE
 		hits++;
-		printk ("dcache_lookup: %s,hit,inode=%d,hits=%d,misses=%d\n",
+		printk ("dcache_lookup: %s,hit,inode=%lu,hits=%d,misses=%d\n",
 			our_name, p->ino, hits, misses);
 		show_cache ("dcache_lookup");
 #endif
@@ -244,7 +251,7 @@ unsigned long ext2_dcache_lookup (unsigned short dev, unsigned long dir,
  * and the functions which create directory entries
  */
 void ext2_dcache_add (unsigned short dev, unsigned long dir, const char * name,
-		      int len, int ino)
+		      int len, unsigned long ino)
 {
 	struct dir_cache_entry * p;
 	int queue;
@@ -252,11 +259,11 @@ void ext2_dcache_add (unsigned short dev, unsigned long dir, const char * name,
 	if (!cache_initialized)
 		init_cache ();
 #ifdef EXT2FS_DEBUG_CACHE
-	printk ("dcache_add (%04x, %d, %s, %d, %d)\n",
+	printk ("dcache_add (%04x, %lu, %s, %d, %lu)\n",
 		dev, dir, name, len, ino);
 #endif
-	if (len > EXT2_NAME_LEN)
-		len = EXT2_NAME_LEN;
+	if (len > DCACHE_NAME_LEN)
+		return;
 	queue = hash (dev, dir);
 	if ((p = find_name (queue, dev, dir, name, len))) {
 		p->dir = dir;
@@ -312,10 +319,10 @@ void ext2_dcache_remove (unsigned short dev, unsigned long dir,
 	if (!cache_initialized)
 		init_cache ();
 #ifdef EXT2FS_DEBUG_CACHE
-	printk ("dcache_remove (%04x, %d, %s, %d)\n", dev, dir, name, len);
+	printk ("dcache_remove (%04x, %lu, %s, %d)\n", dev, dir, name, len);
 #endif
-	if (len > EXT2_NAME_LEN)
-		len = EXT2_NAME_LEN;
+	if (len > DCACHE_NAME_LEN)
+		return;
 	queue = hash (dev, dir);
 	if ((p = find_name (queue, dev, dir, name, len))) {
 		remove_from_cache (p);

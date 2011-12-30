@@ -37,6 +37,8 @@
 #include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/segment.h>
+#include <linux/malloc.h>
+
 #include <asm/system.h>
 
 #include <linux/binfmts.h>
@@ -47,6 +49,7 @@
 asmlinkage int sys_exit(int exit_code);
 asmlinkage int sys_close(unsigned fd);
 asmlinkage int sys_open(const char *, int, int);
+asmlinkage int sys_brk(unsigned long);
 
 extern void shm_exit (void);
 
@@ -117,6 +120,7 @@ int core_dump(long signr, struct pt_regs * regs)
 	unsigned short fs;
 	int has_dumped = 0;
 	char corefile[6+sizeof(current->comm)];
+	int i;
 	register int dump_start, dump_size;
 	struct user dump;
 
@@ -160,6 +164,7 @@ int core_dump(long signr, struct pt_regs * regs)
 	dump.u_dsize = ((unsigned long) (current->brk + (PAGE_SIZE-1))) >> 12;
 	dump.u_dsize -= dump.u_tsize;
 	dump.u_ssize = 0;
+	for(i=0; i<8; i++) dump.u_debugreg[i] = current->debugreg[i];  
 	if (dump.start_stack < TASK_SIZE)
 		dump.u_ssize = ((unsigned long) (TASK_SIZE - dump.start_stack)) >> 12;
 /* If the size of the dump file exceeds the rlimit, then see what would happen
@@ -171,7 +176,7 @@ int core_dump(long signr, struct pt_regs * regs)
 	if ((dump.u_ssize+1) * PAGE_SIZE >
 	    current->rlim[RLIMIT_CORE].rlim_cur)
 		dump.u_ssize = 0;
-       	dump.u_comm = 0;
+       	strncpy(dump.u_comm, current->comm, sizeof(current->comm));
 	dump.u_ar0 = (struct pt_regs *)(((int)(&dump.regs)) -((int)(&dump)));
 	dump.signal = signr;
 	dump.regs = *regs;
@@ -192,8 +197,6 @@ int core_dump(long signr, struct pt_regs * regs)
 	set_fs(KERNEL_DS);
 /* struct user */
 	DUMP_WRITE(&dump,sizeof(dump));
-/* name of the executable */
-	DUMP_WRITE(current->comm,16);
 /* Now dump all of the user data.  Include malloced stuff as well */
 	DUMP_SEEK(PAGE_SIZE);
 /* now we start writing out the user space info */
@@ -258,18 +261,34 @@ asmlinkage int sys_uselib(const char * library)
  * memory and creates the pointer tables from them, and puts their
  * addresses on the "stack", returning the new stack pointer value.
  */
-unsigned long * create_tables(char * p,int argc,int envc)
+unsigned long * create_tables(char * p,int argc,int envc,int ibcs)
 {
 	unsigned long *argv,*envp;
 	unsigned long * sp;
+	struct vm_area_struct *mpnt;
 
+	mpnt = (struct vm_area_struct *)kmalloc(sizeof(*mpnt), GFP_KERNEL);
+	if (mpnt) {
+		mpnt->vm_task = current;
+		mpnt->vm_start = PAGE_MASK & (unsigned long) p;
+		mpnt->vm_end = TASK_SIZE;
+		mpnt->vm_page_prot = PAGE_PRIVATE|PAGE_DIRTY;
+		mpnt->vm_share = NULL;
+		mpnt->vm_inode = NULL;
+		mpnt->vm_offset = 0;
+		mpnt->vm_ops = NULL;
+		insert_vm_struct(current, mpnt);
+		current->stk_vma = mpnt;
+	}
 	sp = (unsigned long *) (0xfffffffc & (unsigned long) p);
 	sp -= envc+1;
 	envp = sp;
 	sp -= argc+1;
 	argv = sp;
-	put_fs_long((unsigned long)envp,--sp);
-	put_fs_long((unsigned long)argv,--sp);
+	if (!ibcs) {
+		put_fs_long((unsigned long)envp,--sp);
+		put_fs_long((unsigned long)argv,--sp);
+	}
 	put_fs_long((unsigned long)argc,--sp);
 	current->arg_start = (unsigned long) p;
 	while (argc-->0) {
@@ -419,6 +438,11 @@ int read_exec(struct inode *inode, unsigned long offset,
  			goto close_readexec;
 	} else
 		file.f_pos = offset;
+	if (get_fs() == USER_DS) {
+		result = verify_area(VERIFY_WRITE, addr, count);
+		if (result)
+			goto close_readexec;
+	}
 	result = file.f_op->read(inode, &file, addr, count);
 close_readexec:
 	if (file.f_op->release)
@@ -460,6 +484,7 @@ void flush_old_exec(struct linux_binprm * bprm)
 
 	mpnt = current->mmap;
 	current->mmap = NULL;
+	current->stk_vma = NULL;
 	while (mpnt) {
 		mpnt1 = mpnt->vm_next;
 		if (mpnt->vm_ops && mpnt->vm_ops->close)
@@ -480,6 +505,8 @@ void flush_old_exec(struct linux_binprm * bprm)
 			}
 		}	
 	}
+
+	for (i=0 ; i<8 ; i++) current->debugreg[i] = 0;
 
 	if (bprm->e_uid != current->euid || bprm->e_gid != current->egid || 
 	    !permission(bprm->inode,MAY_READ))
@@ -698,15 +725,26 @@ extern int load_aout_binary(struct linux_binprm *,
 			    struct pt_regs * regs);
 extern int load_aout_library(int fd);
 
+#ifdef CONFIG_BINFMT_ELF
 extern int load_elf_binary(struct linux_binprm *,
 			    struct pt_regs * regs);
 extern int load_elf_library(int fd);
+#endif
+
+#ifdef CONFIG_BINFMT_COFF
+extern int load_coff_binary(struct linux_binprm *,
+			    struct pt_regs * regs);
+extern int load_coff_library(int fd);
+#endif
 
 /* Here are the actual binaries that will be accepted  */
 struct linux_binfmt formats[] = {
 	{load_aout_binary, load_aout_library},
 #ifdef CONFIG_BINFMT_ELF
 	{load_elf_binary, load_elf_library},
+#endif
+#ifdef CONFIG_BINFMT_COFF
+	{load_coff_binary, load_coff_library},
 #endif
 	{NULL, NULL}
 };
@@ -744,18 +782,20 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 	
 	/* OK, This is the point of no return */
 	flush_old_exec(bprm);
-	current->start_brk = current->brk = ex.a_bss +
-		(current->end_data = ex.a_data +
-		 (current->end_code = N_TXTADDR(ex) + ex.a_text));
 
+	current->end_code = N_TXTADDR(ex) + ex.a_text;
+	current->end_data = ex.a_data + current->end_code;
+	current->start_brk = current->brk = current->end_data;
 	current->start_code += N_TXTADDR(ex);
-
 	current->rss = 0;
 	current->suid = current->euid = bprm->e_uid;
 	current->mmap = NULL;
 	current->executable = NULL;  /* for OMAGIC files */
 	current->sgid = current->egid = bprm->e_gid;
 	if (N_MAGIC(ex) == OMAGIC) {
+		do_mmap(NULL, 0, ex.a_text+ex.a_data,
+			PROT_READ|PROT_WRITE|PROT_EXEC,
+			MAP_FIXED|MAP_PRIVATE, 0);
 		read_exec(bprm->inode, 32, (char *) 0, ex.a_text+ex.a_data);
 	} else {
 		if (ex.a_text & 0xfff || ex.a_data & 0xfff)
@@ -768,7 +808,10 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		file = current->filp[fd];
 		if (!file->f_op || !file->f_op->mmap) {
 			sys_close(fd);
-			read_exec(bprm->inode, N_TXTOFF(ex), 
+			do_mmap(NULL, 0, ex.a_text+ex.a_data,
+				PROT_READ|PROT_WRITE|PROT_EXEC,
+				MAP_FIXED|MAP_PRIVATE, 0);
+			read_exec(bprm->inode, N_TXTOFF(ex),
 				  (char *) N_TXTADDR(ex), ex.a_text+ex.a_data);
 			goto beyond_if;
 		}
@@ -794,10 +837,11 @@ int load_aout_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		bprm->inode->i_count++;
 	}
 beyond_if:
-	zeromap_page_range((N_TXTADDR(ex) + ex.a_text + ex.a_data + 0xfff) & 0xfffff000,ex.a_bss, PAGE_COPY);
+	sys_brk(current->brk+ex.a_bss);
+	
 	p += change_ldt(ex.a_text,bprm->page);
 	p -= MAX_ARG_PAGES*PAGE_SIZE;
-	p = (unsigned long) create_tables((char *)p,bprm->argc,bprm->envc);
+	p = (unsigned long) create_tables((char *)p,bprm->argc,bprm->envc,0);
 	current->start_stack = p;
 	regs->eip = ex.a_entry;		/* eip, magic happens :-) */
 	regs->esp = p;			/* stack pointer */
@@ -851,9 +895,11 @@ int load_aout_library(int fd)
 			N_TXTOFF(ex));
 	if (error != start_addr)
 		return error;
-	len = (ex.a_text + ex.a_data + 0xfff) & 0xfffff000;
+	len = PAGE_ALIGN(ex.a_text + ex.a_data);
 	bss = ex.a_text + ex.a_data + ex.a_bss;
 	if (bss > len)
-		zeromap_page_range(start_addr + len, bss-len, PAGE_COPY);
+		do_mmap(NULL, start_addr + len, bss-len,
+			PROT_READ|PROT_WRITE|PROT_EXEC,
+			MAP_PRIVATE|MAP_FIXED, 0);
 	return 0;
 }

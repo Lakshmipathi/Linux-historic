@@ -22,9 +22,6 @@
  */
 
 
-#define AF_UNIX_MAJOR	17		/* UNIX VFS major number	*/
-
-
 #ifdef _LINUX_UN_H
 
 
@@ -38,6 +35,8 @@ struct unix_proto_data {
 	int		bp_head, bp_tail;
 	struct inode	*inode;
 	struct unix_proto_data	*peerupd;
+	struct wait_queue *wait;	/* Lock across page faults (FvK) */
+	int		lock_flag;
 };
 
 extern struct unix_proto_data unix_datas[NSOCKETS];

@@ -17,7 +17,7 @@
 #include <linux/stat.h>
 #include <linux/locks.h>
 
-#define	NBUF	16
+#define	NBUF	32
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -180,10 +180,8 @@ static int minix_file_read(struct inode * inode, struct file * filp, char * buf,
 	if (!read)
 		return -EIO;
 	filp->f_reada = 1;
-	if (!IS_RDONLY(inode)) {
+	if (!IS_RDONLY(inode))
 		inode->i_atime = CURRENT_TIME;
-		inode->i_dirt = 1;
-	}
 	return read;
 }
 

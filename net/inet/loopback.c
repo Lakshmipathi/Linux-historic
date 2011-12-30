@@ -16,22 +16,22 @@
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  */
-#include <asm/system.h>
-#include <asm/segment.h>
-#include <asm/io.h>
 #include <linux/config.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/fs.h>
-#include <linux/tty.h>
 #include <linux/types.h>
-#include <linux/ptrace.h>
 #include <linux/string.h>
 #include <linux/socket.h>
 #include <linux/errno.h>
 #include <linux/fcntl.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>	/* For the statistics structure. */
+
+#include <asm/system.h>
+#include <asm/segment.h>
+#include <asm/io.h>
+
 #include "inet.h"
 #include "dev.h"
 #include "eth.h"
@@ -61,7 +61,7 @@ loopback_xmit(struct sk_buff *skb, struct device *dev)
   dev->tbusy = 1;
   sti();
 
-  done = dev_rint((unsigned char *)(skb+1), skb->len, 0, dev);
+  done = dev_rint(skb->data, skb->len, 0, dev);
   if (skb->free) kfree_skb(skb, FREE_WRITE);
 
   while (done != 1) {

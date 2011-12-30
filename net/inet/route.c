@@ -10,6 +10,13 @@
  * Authors:	Ross Biro, <bir7@leland.Stanford.Edu>
  *		Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
  *
+ * Fixes:
+ *		Alan Cox	:	Verify area fixes.
+ *		Alan Cox	:	cli() protects routing changes
+ *		Rui Oliveira	:	ICMP routing table updates
+ *		(rco@di.uminho.pt)	Routing table insertion and update
+ *		Linus Torvalds	:	Rewrote bits to be sensible
+ *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
  *		as published by the Free Software Foundation; either version
@@ -38,7 +45,7 @@
 
 
 static struct rtable *rt_base = NULL;
-
+static struct rtable *rt_loopback = NULL;
 
 /* Dump the contents of a routing table entry. */
 static void
@@ -46,210 +53,244 @@ rt_print(struct rtable *rt)
 {
   if (rt == NULL || inet_debug != DBG_RT) return;
 
-  printk("RT: %06lx NXT=%06lx FLAGS=0x%02lx\n",
+  printk("RT: %06lx NXT=%06lx FLAGS=0x%02x\n",
 		(long) rt, (long) rt->rt_next, rt->rt_flags);
   printk("    TARGET=%s ", in_ntoa(rt->rt_dst));
   printk("GW=%s ", in_ntoa(rt->rt_gateway));
-  printk("    DEV=%s USE=%ld REF=%ld\n",
+  printk("    DEV=%s USE=%ld REF=%d\n",
 	(rt->rt_dev == NULL) ? "NONE" : rt->rt_dev->name,
 	rt->rt_use, rt->rt_refcnt);
 }
 
 
-/* Remove a routing table entry. */
-static void
-rt_del(unsigned long dst)
+/*
+ * Remove a routing table entry.
+ */
+static void rt_del(unsigned long dst)
 {
-  struct rtable *r, *x, *p;
+	struct rtable *r, **rp;
+	unsigned long flags;
 
-  DPRINTF((DBG_RT, "RT: flushing for dst %s\n", in_ntoa(dst)));
-  if ((r = rt_base) == NULL) return;
-  p = NULL;
-  while(r != NULL) {
-	if (r->rt_dst == dst) {
-		if (p == NULL) rt_base = r->rt_next;
-		  else p->rt_next = r->rt_next;
-		x = r->rt_next;
-		kfree_s(r, sizeof(struct rtable));
-		r = x;
-	} else {
-		p = r;
-		r = r->rt_next;
-	}
-  }
-}
-
-
-/* Remove all routing table entries for a device. */
-void
-rt_flush(struct device *dev)
-{
-  struct rtable *r, *x, *p;
-
-  DPRINTF((DBG_RT, "RT: flushing for dev 0x%08lx (%s)\n", (long)dev, dev->name));
-  if ((r = rt_base) == NULL) return;
-  p = NULL;
-  while(r != NULL) {
-	if (r->rt_dev == dev) {
-		if (p == NULL) rt_base = r->rt_next;
-		  else p->rt_next = r->rt_next;
-		x = r->rt_next;
-		kfree_s(r, sizeof(struct rtable));
-		r = x;
-	} else {
-		p = r;
-		r = r->rt_next;
-	}
-  }
-}
-
-
-void
-rt_add(short flags, unsigned long dst, unsigned long gw, struct device *dev)
-{
-  struct rtable *r, *r1;
-  struct rtable *rt;
-  int mask;
-
-  /* Allocate an entry. */
-  rt = (struct rtable *) kmalloc(sizeof(struct rtable), GFP_ATOMIC);
-  if (rt == NULL) {
-	DPRINTF((DBG_RT, "RT: no memory for new route!\n"));
-	return;
-  }
-
-  /* Fill in the fields. */
-  memset(rt, 0, sizeof(struct rtable));
-  rt->rt_flags = (flags | RTF_UP);
-  if (gw != 0) rt->rt_flags |= RTF_GATEWAY;
-  rt->rt_dev = dev;
-  rt->rt_gateway = gw;
-
-  /*
-   * If this is coming from an ICMP redirect message, truncate
-   * the TARGET if we are creating an entry for a NETWORK. Use
-   * an Internet class C network mask.  Yuck :-(
-   */
-  if (flags & RTF_DYNAMIC) {
-	if (flags & RTF_HOST)
-		rt->rt_dst = dst;
-	else
-		rt->rt_dst = (dst & dev->pa_mask);
-  } else rt->rt_dst = dst;
-
-  rt_print(rt);
-
-  if (rt_base == NULL) {
-	rt->rt_next = NULL;
-	rt_base = rt;
-	return;
-  }
-
-  /*
-   * What we have to do is loop though this until we have
-   * found the first address which has the same generality
-   * as the one in rt.  Then we can put rt in after it.
-   */
-  for (mask = 0xff000000; mask != 0xffffffff; mask = (mask >> 8) | mask) {
-	if (mask & dst) {
-		mask = mask << 8;
-		break;
-	}
-  }
-  DPRINTF((DBG_RT, "RT: mask = %X\n", mask));
-  r1 = rt_base;
-
-  /* See if we are getting a duplicate. */
-  for (r = rt_base; r != NULL; r = r->rt_next) {
-	if (r->rt_dst == dst) {
-		if (r == rt_base) {
-			rt->rt_next = r->rt_next;
-			rt_base = rt;
-		} else {
-			rt->rt_next = r->rt_next;
-			r1->rt_next = rt;
+	DPRINTF((DBG_RT, "RT: flushing for dst %s\n", in_ntoa(dst)));
+	rp = &rt_base;
+	save_flags(flags);
+	cli();
+	while((r = *rp) != NULL) {
+		if (r->rt_dst != dst) {
+			rp = &r->rt_next;
+			continue;
 		}
+		*rp = r->rt_next;
+		if (rt_loopback == r)
+			rt_loopback = NULL;
 		kfree_s(r, sizeof(struct rtable));
-		return;
-	}
+	} 
+	restore_flags(flags);
+}
 
-	if (! (r->rt_dst & mask)) {
-		DPRINTF((DBG_RT, "RT: adding before r=%X\n", r));
-		rt_print(r);
-		if (r == rt_base) {
-			rt->rt_next = rt_base;
-			rt_base = rt;
+
+/*
+ * Remove all routing table entries for a device.
+ */
+void rt_flush(struct device *dev)
+{
+	struct rtable *r;
+	struct rtable **rp;
+	unsigned long flags;
+
+	DPRINTF((DBG_RT, "RT: flushing for dev 0x%08lx (%s)\n", (long)dev, dev->name));
+	rp = &rt_base;
+	cli();
+	save_flags(flags);
+	while ((r = *rp) != NULL) {
+		if (r->rt_dev != dev) {
+			rp = &r->rt_next;
+			continue;
+		}
+		*rp = r->rt_next;
+		if (rt_loopback == r)
+			rt_loopback = NULL;
+		kfree_s(r, sizeof(struct rtable));
+	} 
+	restore_flags(flags);
+}
+
+/*
+ * Used by 'rt_add()' when we can't get the netmask any other way..
+ *
+ * If the lower byte or two are zero, we guess the mask based on the
+ * number of zero 8-bit net numbers, otherwise we use the "default"
+ * masks judging by the destination address and our device netmask.
+ */
+static inline unsigned long default_mask(unsigned long dst)
+{
+	dst = ntohl(dst);
+	if (IN_CLASSA(dst))
+		return htonl(IN_CLASSA_NET);
+	if (IN_CLASSB(dst))
+		return htonl(IN_CLASSB_NET);
+	return htonl(IN_CLASSC_NET);
+}
+
+static unsigned long guess_mask(unsigned long dst, struct device * dev)
+{
+	unsigned long mask;
+
+	if (!dst)
+		return 0;
+	mask = default_mask(dst);
+	if ((dst ^ dev->pa_addr) & mask)
+		return mask;
+	return dev->pa_mask;
+}
+
+static inline struct device * get_gw_dev(unsigned long gw)
+{
+	struct rtable * rt;
+
+	for (rt = rt_base ; ; rt = rt->rt_next) {
+		if (!rt)
+			return NULL;
+		if ((gw ^ rt->rt_dst) & rt->rt_mask)
+			continue;
+		/* gateways behind gateways are a no-no */
+		if (rt->rt_flags & RTF_GATEWAY)
+			return NULL;
+		return rt->rt_dev;
+	}
+}
+
+/*
+ * rewrote rt_add(), as the old one was weird. Linus
+ */
+void rt_add(short flags, unsigned long dst, unsigned long mask,
+	unsigned long gw, struct device *dev)
+{
+	struct rtable *r, *rt;
+	struct rtable **rp;
+	unsigned long cpuflags;
+
+	if (flags & RTF_HOST) {
+		mask = 0xffffffff;
+	} else if (!mask) {
+		if (!((dst ^ dev->pa_addr) & dev->pa_mask)) {
+			mask = dev->pa_mask;
+			flags &= ~RTF_GATEWAY;
+			if (flags & RTF_DYNAMIC) {
+				/*printk("Dynamic route to my own net rejected\n");*/
+				return;
+			}
+		} else
+			mask = guess_mask(dst, dev);
+		dst &= mask;
+	}
+	if (gw == dev->pa_addr)
+		flags &= ~RTF_GATEWAY;
+	if (flags & RTF_GATEWAY) {
+		/* don't try to add a gateway we can't reach.. */
+		if (dev != get_gw_dev(gw))
 			return;
-		}
-		rt->rt_next = r;
-		r1->rt_next = rt;
+		flags |= RTF_GATEWAY;
+	} else
+		gw = 0;
+	/* Allocate an entry. */
+	rt = (struct rtable *) kmalloc(sizeof(struct rtable), GFP_ATOMIC);
+	if (rt == NULL) {
+		DPRINTF((DBG_RT, "RT: no memory for new route!\n"));
 		return;
 	}
-	r1 = r;
-  }
-  DPRINTF((DBG_RT, "RT: adding after r1=%X\n", r1));
-  rt_print(r1);
+	memset(rt, 0, sizeof(struct rtable));
+	rt->rt_flags = flags | RTF_UP;
+	rt->rt_dst = dst;
+	rt->rt_dev = dev;
+	rt->rt_gateway = gw;
+	rt->rt_mask = mask;
+	rt->rt_mtu = dev->mtu;
+	rt_print(rt);
+	/*
+	 * What we have to do is loop though this until we have
+	 * found the first address which has a higher generality than
+	 * the one in rt.  Then we can put rt in right before it.
+	 */
+	save_flags(cpuflags);
+	cli();
+	/* remove old route if we are getting a duplicate. */
+	rp = &rt_base;
+	while ((r = *rp) != NULL) {
+		if (r->rt_dst != dst) {
+			rp = &r->rt_next;
+			continue;
+		}
+		*rp = r->rt_next;
+		if (rt_loopback == r)
+			rt_loopback = NULL;
+		kfree_s(r, sizeof(struct rtable));
+	}
+	/* add the new route */
+	rp = &rt_base;
+	while ((r = *rp) != NULL) {
+		if ((r->rt_mask & mask) != mask)
+			break;
+		rp = &r->rt_next;
+	}
+	rt->rt_next = r;
+	*rp = rt;
+	if (rt->rt_dev->flags & IFF_LOOPBACK)
+		rt_loopback = rt;
+	restore_flags(cpuflags);
+	return;
+}
 
-  /* Goes at the end. */
-  rt->rt_next = NULL;
-  r1->rt_next = rt;
+static inline int bad_mask(unsigned long mask, unsigned long addr)
+{
+	if (addr & (mask = ~mask))
+		return 1;
+	mask = ntohl(mask);
+	if (mask & (mask+1))
+		return 1;
+	return 0;
+}
+
+static int rt_new(struct rtentry *r)
+{
+	struct device *dev;
+	unsigned long flags, daddr, mask, gw;
+
+	if (r->rt_dst.sa_family != AF_INET)
+		return -EAFNOSUPPORT;
+
+	flags = r->rt_flags;
+	daddr = ((struct sockaddr_in *) &r->rt_dst)->sin_addr.s_addr;
+	mask = r->rt_genmask;
+	gw = ((struct sockaddr_in *) &r->rt_gateway)->sin_addr.s_addr;
+	dev = (struct device *) r->rt_dev;
+
+	if (flags & RTF_GATEWAY) {
+		if (r->rt_gateway.sa_family != AF_INET)
+			return -EAFNOSUPPORT;
+		if (!dev)
+			dev = get_gw_dev(gw);
+	} else if (!dev)
+		dev = dev_check(daddr);
+
+	if (dev == NULL)
+		return -ENETUNREACH;
+
+	if (bad_mask(mask, daddr))
+		mask = 0;
+
+	rt_add(flags, daddr, mask, gw, dev);
+	return 0;
 }
 
 
-static int
-rt_new(struct rtentry *r)
+static int rt_kill(struct rtentry *r)
 {
-  struct device *dev;
-  struct rtable *rt;
+	struct sockaddr_in *trg;
 
-  if ((r->rt_dst.sa_family != AF_INET) ||
-      (r->rt_gateway.sa_family != AF_INET)) {
-	DPRINTF((DBG_RT, "RT: We only know about AF_INET !\n"));
-	return(-EAFNOSUPPORT);
-  }
-
-  /*
-   * I admit that the following bits of code were "inspired" by
-   * the Berkeley UNIX system source code.  I could think of no
-   * other way to find out how to make it compatible with it (I
-   * want this to be compatible to get "routed" up and running).
-   * -FvK
-   */
-
-  /* If we have a 'gateway' route here, check the correct address. */
-  if (!(r->rt_flags & RTF_GATEWAY))
-	dev = dev_check(((struct sockaddr_in *) &r->rt_dst)->sin_addr.s_addr);
-  else
-	if ((rt = rt_route(((struct sockaddr_in *) &r->rt_gateway)->sin_addr.
-			   s_addr,NULL)))
-	    dev = rt->rt_dev;
-	else
-	    dev = NULL;
-
-  DPRINTF((DBG_RT, "RT: dev for %s gw ",
-	in_ntoa((*(struct sockaddr_in *)&r->rt_dst).sin_addr.s_addr)));
-  DPRINTF((DBG_RT, "%s (0x%04X) is 0x%X (%s)\n",
-	in_ntoa((*(struct sockaddr_in *)&r->rt_gateway).sin_addr.s_addr),
-	r->rt_flags, dev, (dev == NULL) ? "NONE" : dev->name));
-
-  if (dev == NULL) return(-ENETUNREACH);
-
-  rt_add(r->rt_flags, (*(struct sockaddr_in *) &r->rt_dst).sin_addr.s_addr,
-	 (*(struct sockaddr_in *) &r->rt_gateway).sin_addr.s_addr, dev);
-
-  return(0);
-}
-
-
-static int
-rt_kill(struct rtentry *r)
-{
-  struct sockaddr_in *trg;
-
-  trg = (struct sockaddr_in *) &r->rt_dst;
-  rt_del(trg->sin_addr.s_addr);
-
-  return(0);
+	trg = (struct sockaddr_in *) &r->rt_dst;
+	rt_del(trg->sin_addr.s_addr);
+	return 0;
 }
 
 
@@ -263,91 +304,81 @@ rt_get_info(char *buffer)
   pos = buffer;
 
   pos += sprintf(pos,
-		 "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\n");
+		 "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n");
   
   /* This isn't quite right -- r->rt_dst is a struct! */
   for (r = rt_base; r != NULL; r = r->rt_next) {
-        pos += sprintf(pos, "%s\t%08X\t%08X\t%02X\t%d\t%d\t%d\n",
+        pos += sprintf(pos, "%s\t%08lX\t%08lX\t%02X\t%d\t%lu\t%d\t%08lX\n",
 		r->rt_dev->name, r->rt_dst, r->rt_gateway,
-		r->rt_flags, r->rt_refcnt, r->rt_use, r->rt_metric);
+		r->rt_flags, r->rt_refcnt, r->rt_use, r->rt_metric,
+		r->rt_mask);
   }
   return(pos - buffer);
 }
 
+/*
+ * This is hackish, but results in better code. Use "-S" to see why.
+ */
+#define early_out ({ goto no_route; 1; })
 
-struct rtable *
-rt_route(unsigned long daddr, struct options *opt)
+struct rtable * rt_route(unsigned long daddr, struct options *opt)
 {
-  struct rtable *rt;
+	struct rtable *rt;
 
-  /*
-   * This is a hack, I think. -FvK
-   */
-  if (chk_addr(daddr) == IS_MYADDR) daddr = my_addr();
-
-  /*
-   * Loop over the IP routing table to find a route suitable
-   * for this packet.  Note that we really should have a look
-   * at the IP options to see if we have been given a hint as
-   * to what kind of path we should use... -FvK
-   */
-  for (rt = rt_base; rt != NULL; rt = rt->rt_next)
-	if ((rt->rt_flags & RTF_HOST) && rt->rt_dst == daddr) {
-		DPRINTF((DBG_RT, "%s (%s)\n",
-			rt->rt_dev->name, in_ntoa(rt->rt_gateway)));
-		rt->rt_use++;
-		return(rt);
+	for (rt = rt_base; rt != NULL || early_out ; rt = rt->rt_next) {
+		if (!((rt->rt_dst ^ daddr) & rt->rt_mask))
+			break;
+		/* broadcast addresses can be special cases.. */
+		if ((rt->rt_dev->flags & IFF_BROADCAST) &&
+		     rt->rt_dev->pa_brdaddr == daddr)
+			break;
 	}
-  for (rt = rt_base; rt != NULL; rt = rt->rt_next) {
-	DPRINTF((DBG_RT, "RT: %s via ", in_ntoa(daddr)));
-	if (!(rt->rt_flags & RTF_HOST) && ip_addr_match(rt->rt_dst, daddr)) {
-		DPRINTF((DBG_RT, "%s (%s)\n",
-			rt->rt_dev->name, in_ntoa(rt->rt_gateway)));
-		rt->rt_use++;
-		return(rt);
+	if (daddr == rt->rt_dev->pa_addr) {
+		if ((rt = rt_loopback) == NULL)
+			goto no_route;
 	}
-	if ((rt->rt_dev->flags & IFF_BROADCAST) &&
-	    ip_addr_match(rt->rt_dev->pa_brdaddr, daddr)) {
-		DPRINTF((DBG_RT, "%s (BCAST %s)\n",
-			rt->rt_dev->name, in_ntoa(rt->rt_dev->pa_brdaddr)));
-		rt->rt_use++;
-		return(rt);
-	}
-  }
-
-  DPRINTF((DBG_RT, "NONE\n"));
-  return(NULL);
-};
+	rt->rt_use++;
+	return rt;
+no_route:
+	return NULL;
+}
 
 
-int
-rt_ioctl(unsigned int cmd, void *arg)
+int rt_ioctl(unsigned int cmd, void *arg)
 {
-  struct device *dev;
-  struct rtentry rt;
-  char namebuf[32];
-  int ret;
+	struct device *dev;
+	struct rtentry rt;
+	char *devname;
+	int ret;
+	int err;
 
-  switch(cmd) {
+	switch(cmd) {
 	case DDIOCSDBG:
 		ret = dbg_ioctl(arg, DBG_RT);
 		break;
 	case SIOCADDRT:
 	case SIOCDELRT:
-		if (!suser()) return(-EPERM);
-		verify_area(VERIFY_WRITE, arg, sizeof(struct rtentry));
+		if (!suser())
+			return -EPERM;
+		err=verify_area(VERIFY_READ, arg, sizeof(struct rtentry));
+		if (err)
+			return err;
 		memcpy_fromfs(&rt, arg, sizeof(struct rtentry));
-		if (rt.rt_dev) {
-		    verify_area(VERIFY_WRITE, rt.rt_dev, sizeof namebuf);
-		    memcpy_fromfs(&namebuf, rt.rt_dev, sizeof namebuf);
-		    dev = dev_get(namebuf);
-		    rt.rt_dev = dev;
+		if ((devname = (char *) rt.rt_dev) != NULL) {
+			err = getname(devname, &devname);
+			if (err)
+				return err;
+			dev = dev_get(devname);
+			putname(devname);
+			if (!dev)
+				return -EINVAL;
+			rt.rt_dev = dev;
 		}
 		ret = (cmd == SIOCDELRT) ? rt_kill(&rt) : rt_new(&rt);
 		break;
 	default:
 		ret = -EINVAL;
-  }
+	}
 
-  return(ret);
+	return ret;
 }

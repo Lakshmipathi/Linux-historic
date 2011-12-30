@@ -13,6 +13,7 @@
 #include <linux/sched.h>
 #include <linux/head.h>
 #include <linux/kernel.h>
+#include <linux/kernel_stat.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/stat.h>
@@ -41,6 +42,7 @@ static struct swap_info_struct {
 	int pages;
 	int lowest_bit;
 	int highest_bit;
+	unsigned long max;
 } swap_info[MAX_SWAPFILES];
 
 extern unsigned long free_page_list;
@@ -52,8 +54,6 @@ extern int shm_swap (int);
  */
 #define NR_LAST_FREE_PAGES 32
 static unsigned long last_free_pages[NR_LAST_FREE_PAGES] = {0,};
-
-#define SWAP_BITS PAGE_SIZE
 
 void rw_swap_page(int rw, unsigned long entry, char * buf)
 {
@@ -67,7 +67,7 @@ void rw_swap_page(int rw, unsigned long entry, char * buf)
 	}
 	p = &swap_info[type];
 	offset = SWP_OFFSET(entry);
-	if (offset >= SWAP_BITS) {
+	if (offset >= p->max) {
 		printk("rw_swap_page: weirdness\n");
 		return;
 	}
@@ -77,6 +77,10 @@ void rw_swap_page(int rw, unsigned long entry, char * buf)
 	}
 	while (set_bit(offset,p->swap_lockmap))
 		sleep_on(&lock_queue);
+	if (rw == READ)
+		kstat.pswpin++;
+	else
+		kstat.pswpout++;
 	if (p->swap_device) {
 		ll_rw_page(rw,p->swap_device,offset,buf);
 	} else if (p->swap_file) {
@@ -94,7 +98,7 @@ void rw_swap_page(int rw, unsigned long entry, char * buf)
 		ll_rw_swap_file(rw,p->swap_file->i_dev, zones, i,buf);
 	} else
 		printk("re_swap_page: no swap file or device\n");
-	if (!clear_bit(offset,p->swap_lockmap))
+	if (offset && !clear_bit(offset,p->swap_lockmap))
 		printk("rw_swap_page: lock already cleared\n");
 	wake_up(&lock_queue);
 }
@@ -138,8 +142,8 @@ unsigned long swap_duplicate(unsigned long entry)
 		return 0;
 	}
 	p = type + swap_info;
-	if (offset >= SWAP_BITS) {
-		printk("swap_free: weirness\n");
+	if (offset >= p->max) {
+		printk("swap_free: weirdness\n");
 		return 0;
 	}
 	if (!p->swap_map[offset]) {
@@ -166,8 +170,8 @@ void swap_free(unsigned long entry)
 	}
 	p = & swap_info[type];
 	offset = SWP_OFFSET(entry);
-	if (offset >= SWAP_BITS) {
-		printk("swap_free: weirness\n");
+	if (offset >= p->max) {
+		printk("swap_free: weirdness\n");
 		return;
 	}
 	if (!(p->flags & SWP_USED)) {
@@ -181,7 +185,7 @@ void swap_free(unsigned long entry)
 	if (offset > p->highest_bit)
 		p->highest_bit = offset;
 	if (!p->swap_map[offset])
-		printk("swap_free: swap-space map bad (entry %08x)\n",entry);
+		printk("swap_free: swap-space map bad (entry %08lx)\n",entry);
 	else
 		if (!--p->swap_map[offset])
 			nr_swap_pages++;
@@ -357,7 +361,7 @@ static int swap_out(unsigned int priority)
 	    if(mem_map[MAP_NR(pg_table)] & MAP_PAGE_RESERVED)
 		    continue;
 	    if(!(PAGE_PRESENT & pg_table)) {
-		    printk("swap_out: bad page-table at pg_dir[%d]: %08x\n",
+		    printk("swap_out: bad page-table at pg_dir[%d]: %08lx\n",
 			    table, pg_table);
 		    ((unsigned long *) p->tss.cr3)[table] = 0;
 		    continue;
@@ -530,8 +534,8 @@ void free_page(unsigned long addr)
 			}
 			return;
 		}
-		printk("Trying to free free memory (%08x): memory probabably corrupted\n",addr);
-		printk("PC = %08x\n",*(((unsigned long *)&addr)-1));
+		printk("Trying to free free memory (%08lx): memory probabably corrupted\n",addr);
+		printk("PC = %08lx\n",*(((unsigned long *)&addr)-1));
 		return;
 	}
 }
@@ -558,10 +562,10 @@ last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
 				restore_flags(flag); \
 				return result; \
 			} \
-			printk("Free page %08x has mem_map = %d\n", \
+			printk("Free page %08lx has mem_map = %d\n", \
 				result,mem_map[MAP_NR(result)]); \
 		} else \
-			printk("Result = 0x%08x - memory map destroyed\n", result); \
+			printk("Result = 0x%08lx - memory map destroyed\n", result); \
 		queue = 0; \
 		nr = 0; \
 	} else if (nr) { \
@@ -700,7 +704,7 @@ asmlinkage int sys_swapoff(const char * specialfile)
 	iput(p->swap_file);
 	p->swap_file = NULL;
 	p->swap_device = 0;
-	free_page((long) p->swap_map);
+	vfree(p->swap_map);
 	p->swap_map = NULL;
 	free_page((long) p->swap_lockmap);
 	p->swap_lockmap = NULL;
@@ -718,8 +722,8 @@ asmlinkage int sys_swapon(const char * specialfile)
 	struct swap_info_struct * p;
 	struct inode * swap_inode;
 	unsigned int type;
-	unsigned char * tmp;
 	int i,j;
+	int error;
 
 	if (!suser())
 		return -EPERM;
@@ -738,102 +742,89 @@ asmlinkage int sys_swapon(const char * specialfile)
 	p->swap_lockmap = NULL;
 	p->lowest_bit = 0;
 	p->highest_bit = 0;
-	i = namei(specialfile,&swap_inode);
-	if (i) {
-		p->flags = 0;
-		return i;
-	}
-	if (swap_inode->i_count != 1) {
-		iput(swap_inode);
-		p->flags = 0;
-		return -EBUSY;
-	}
+	p->max = 1;
+	error = namei(specialfile,&swap_inode);
+	if (error)
+		goto bad_swap;
+	error = -EBUSY;
+	if (swap_inode->i_count != 1)
+		goto bad_swap;
+	error = -EINVAL;
 	if (S_ISBLK(swap_inode->i_mode)) {
 		p->swap_device = swap_inode->i_rdev;
 		iput(swap_inode);
-		if (!p->swap_device) {
-			p->flags = 0;
-			return -ENODEV;
-		}
+		error = -ENODEV;
+		if (!p->swap_device)
+			goto bad_swap;
+		error = -EBUSY;
 		for (i = 0 ; i < nr_swapfiles ; i++) {
 			if (i == type)
 				continue;
-			if (p->swap_device == swap_info[i].swap_device) {
-				p->swap_device = 0;
-				p->flags = 0;
-				return -EBUSY;
-			}
+			if (p->swap_device == swap_info[i].swap_device)
+				goto bad_swap;
 		}
 	} else if (S_ISREG(swap_inode->i_mode))
 		p->swap_file = swap_inode;
-	else {
-		iput(swap_inode);
-		p->flags = 0;
-		return -EINVAL;
-	}
-	tmp = (unsigned char *) get_free_page(GFP_USER);
+	else
+		goto bad_swap;
 	p->swap_lockmap = (unsigned char *) get_free_page(GFP_USER);
-	if (!tmp || !p->swap_lockmap) {
+	if (!p->swap_lockmap) {
 		printk("Unable to start swapping: out of memory :-)\n");
-		free_page((long) tmp);
-		free_page((long) p->swap_lockmap);
-		iput(p->swap_file);
-		p->swap_device = 0;
-		p->swap_file = NULL;
-		p->swap_map = NULL;
-		p->swap_lockmap = NULL;
-		p->flags = 0;
-		return -ENOMEM;
+		error = -ENOMEM;
+		goto bad_swap;
 	}
-	read_swap_page(SWP_ENTRY(type,0), (char *) tmp);
-	if (memcmp("SWAP-SPACE",tmp+4086,10)) {
+	read_swap_page(SWP_ENTRY(type,0), (char *) p->swap_lockmap);
+	if (memcmp("SWAP-SPACE",p->swap_lockmap+4086,10)) {
 		printk("Unable to find swap-space signature\n");
-		free_page((long) tmp);
-		free_page((long) p->swap_lockmap);
-		iput(p->swap_file);
-		p->swap_device = 0;
-		p->swap_file = NULL;
-		p->swap_map = NULL;
-		p->swap_lockmap = NULL;
-		p->flags = 0;
-		return -EINVAL;
+		error = -EINVAL;
+		goto bad_swap;
 	}
-	memset(tmp+PAGE_SIZE-10,0,10);
+	memset(p->swap_lockmap+PAGE_SIZE-10,0,10);
 	j = 0;
 	p->lowest_bit = 0;
 	p->highest_bit = 0;
-	for (i = 1 ; i < SWAP_BITS ; i++)
-		if (test_bit(i,tmp)) {
+	for (i = 1 ; i < 8*PAGE_SIZE ; i++) {
+		if (test_bit(i,p->swap_lockmap)) {
 			if (!p->lowest_bit)
 				p->lowest_bit = i;
 			p->highest_bit = i;
+			p->max = i+1;
 			j++;
 		}
+	}
 	if (!j) {
 		printk("Empty swap-file\n");
-		free_page((long) tmp);
-		free_page((long) p->swap_lockmap);
-		iput(p->swap_file);
-		p->swap_device = 0;
-		p->swap_file = NULL;
-		p->swap_map = NULL;
-		p->swap_lockmap = NULL;
-		p->flags = 0;
-		return -EINVAL;
+		error = -EINVAL;
+		goto bad_swap;
 	}
-	i = SWAP_BITS;
-	while (i--)
-		if (test_bit(i,tmp))
-			tmp[i] = 0;
+	p->swap_map = (unsigned char *) vmalloc(p->max);
+	if (!p->swap_map) {
+		error = -ENOMEM;
+		goto bad_swap;
+	}
+	for (i = 1 ; i < p->max ; i++) {
+		if (test_bit(i,p->swap_lockmap))
+			p->swap_map[i] = 0;
 		else
-			tmp[i] = 0x80;
-	tmp[0] = 0x80;
-	p->swap_map = tmp;
+			p->swap_map[i] = 0x80;
+	}
+	p->swap_map[0] = 0x80;
+	memset(p->swap_lockmap,0,PAGE_SIZE);
 	p->flags = SWP_WRITEOK;
 	p->pages = j;
 	nr_swap_pages += j;
 	printk("Adding Swap: %dk swap-space\n",j<<2);
 	return 0;
+bad_swap:
+	free_page((long) p->swap_lockmap);
+	vfree(p->swap_map);
+	iput(p->swap_file);
+	p->swap_device = 0;
+	p->swap_file = NULL;
+	p->swap_map = NULL;
+	p->swap_lockmap = NULL;
+	p->flags = 0;
+	return error;
 }
 
 void si_swapinfo(struct sysinfo *val)
@@ -844,7 +835,7 @@ void si_swapinfo(struct sysinfo *val)
 	for (i = 0; i < nr_swapfiles; i++) {
 		if (!(swap_info[i].flags & SWP_USED))
 			continue;
-		for (j = 0; j < SWAP_BITS; ++j)
+		for (j = 0; j < swap_info[i].max; ++j)
 			switch (swap_info[i].swap_map[j]) {
 				case 128:
 					continue;

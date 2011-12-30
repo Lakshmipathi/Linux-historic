@@ -29,6 +29,7 @@
  */
 
 #include <asm/system.h>
+#include <linux/config.h>
 
 #include <linux/signal.h>
 #include <linux/sched.h>
@@ -41,6 +42,8 @@
 #include <linux/mman.h>
 
 unsigned long high_memory = 0;
+
+extern unsigned long pg0[1024];		/* page table for 0-4MB for everybody */
 
 extern void sound_mem_init(void);
 extern void die_if_kernel(char *,struct pt_regs *,long);
@@ -86,7 +89,7 @@ static void free_one_table(unsigned long * page_dir)
 		return;
 	*page_dir = 0;
 	if (pg_table >= high_memory || !(pg_table & PAGE_PRESENT)) {
-		printk("Bad page table: [%p]=%08x\n",page_dir,pg_table);
+		printk("Bad page table: [%p]=%08lx\n",page_dir,pg_table);
 		return;
 	}
 	if (mem_map[MAP_NR(pg_table)] & MAP_PAGE_RESERVED)
@@ -332,7 +335,7 @@ int zeromap_page_range(unsigned long from, unsigned long size, int mask)
 		mask |= ZERO_PAGE;
 	}
 	if (from & ~PAGE_MASK) {
-		printk("zeromap_page_range: from = %08x\n",from);
+		printk("zeromap_page_range: from = %08lx\n",from);
 		return -EINVAL;
 	}
 	dir = PAGE_DIR_OFFSET(current->tss.cr3,from);
@@ -394,7 +397,7 @@ int remap_page_range(unsigned long from, unsigned long to, unsigned long size, i
 		}
 	}
 	if ((from & ~PAGE_MASK) || (to & ~PAGE_MASK)) {
-		printk("remap_page_range: from = %08x, to=%08x\n",from,to);
+		printk("remap_page_range: from = %08lx, to=%08lx\n",from,to);
 		return -EINVAL;
 	}
 	dir = PAGE_DIR_OFFSET(current->tss.cr3,from);
@@ -472,7 +475,7 @@ unsigned long put_page(struct task_struct * tsk,unsigned long page,
 	if ((prot & (PAGE_MASK|PAGE_PRESENT)) != PAGE_PRESENT)
 		printk("put_page: prot = %08x\n",prot);
 	if (page >= high_memory) {
-		printk("put_page: trying to put page %08x at %08x\n",page,address);
+		printk("put_page: trying to put page %08lx at %08lx\n",page,address);
 		return 0;
 	}
 	page_table = PAGE_DIR_OFFSET(tsk->tss.cr3,address);
@@ -506,9 +509,9 @@ unsigned long put_dirty_page(struct task_struct * tsk, unsigned long page, unsig
 	unsigned long tmp, *page_table;
 
 	if (page >= high_memory)
-		printk("put_dirty_page: trying to put page %08x at %08x\n",page,address);
+		printk("put_dirty_page: trying to put page %08lx at %08lx\n",page,address);
 	if (mem_map[MAP_NR(page)] != 1)
-		printk("mem_map disagrees with %08x at %08x\n",page,address);
+		printk("mem_map disagrees with %08lx at %08lx\n",page,address);
 	page_table = PAGE_DIR_OFFSET(tsk->tss.cr3,address);
 	if (PAGE_PRESENT & *page_table)
 		page_table = (unsigned long *) (PAGE_MASK & *page_table);
@@ -592,12 +595,12 @@ static void __do_wp_page(unsigned long error_code, unsigned long address,
 		free_page(new_page);
 	return;
 bad_wp_page:
-	printk("do_wp_page: bogus page at address %08x (%08x)\n",address,old_page);
+	printk("do_wp_page: bogus page at address %08lx (%08lx)\n",address,old_page);
 	*(unsigned long *) pte = BAD_PAGE | PAGE_SHARED;
 	send_sig(SIGKILL, tsk, 1);
 	goto end_wp_page;
 bad_wp_pagetable:
-	printk("do_wp_page: bogus page-table at address %08x (%08x)\n",address,pte);
+	printk("do_wp_page: bogus page-table at address %08lx (%08lx)\n",address,pte);
 	*pde = BAD_PAGETABLE | PAGE_TABLE;
 	send_sig(SIGKILL, tsk, 1);
 end_wp_page:
@@ -629,6 +632,9 @@ void do_wp_page(unsigned long error_code, unsigned long address,
 			return;
 		if (!(page & PAGE_COW)) {
 			if (user_esp && tsk == current) {
+				current->tss.cr2 = address;
+				current->tss.error_code = error_code;
+				current->tss.trap_no = 14;
 				send_sig(SIGSEGV, tsk, 1);
 				return;
 			}
@@ -641,23 +647,12 @@ void do_wp_page(unsigned long error_code, unsigned long address,
 		__do_wp_page(error_code, address, tsk, user_esp);
 		return;
 	}
-	printk("bad page directory entry %08x\n",page);
+	printk("bad page directory entry %08lx\n",page);
 	*pg_table = 0;
 }
 
-int verify_area(int type, void * addr, unsigned long size)
+int __verify_write(unsigned long start, unsigned long size)
 {
-	unsigned long start;
-
-	start = (unsigned long) addr;
-	if (start >= TASK_SIZE)
-		return -EFAULT;
-	if (size > TASK_SIZE - start)
-		return -EFAULT;
-	if (type == VERIFY_READ || !size)
-		return 0;
-	if (!size)
-		return 0;
 	size--;
 	size += start & ~PAGE_MASK;
 	size >>= PAGE_SHIFT;
@@ -846,27 +841,41 @@ void do_no_page(unsigned long error_code, unsigned long address,
 		return;
 	}
 	address &= 0xfffff000;
-	for (mpnt = tsk->mmap ; mpnt ; mpnt = mpnt->vm_next) {
+	tmp = 0;
+	for (mpnt = tsk->mmap; mpnt != NULL; mpnt = mpnt->vm_next) {
 		if (address < mpnt->vm_start)
-			continue;
-		if (address >= ((mpnt->vm_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)))
-			continue;
-		if (!mpnt->vm_ops || !mpnt->vm_ops->nopage)
 			break;
+		if (address >= mpnt->vm_end) {
+			tmp = mpnt->vm_end;
+			continue;
+		}
+		if (!mpnt->vm_ops || !mpnt->vm_ops->nopage) {
+			++tsk->min_flt;
+			get_empty_page(tsk,address);
+			return;
+		}
 		mpnt->vm_ops->nopage(error_code, mpnt, address);
 		return;
 	}
+	if (tsk != current)
+		goto ok_no_page;
+	if (address >= tsk->end_data && address < tsk->brk)
+		goto ok_no_page;
+	if (mpnt && mpnt == tsk->stk_vma &&
+	    address - tmp > mpnt->vm_start - address &&
+	    tsk->rlim[RLIMIT_STACK].rlim_cur > mpnt->vm_end - address) {
+		mpnt->vm_start = address;
+		goto ok_no_page;
+	}
+	tsk->tss.cr2 = address;
+	current->tss.error_code = error_code;
+	current->tss.trap_no = 14;
+	send_sig(SIGSEGV,tsk,1);
+	if (error_code & 4)	/* user level access? */
+		return;
+ok_no_page:
 	++tsk->min_flt;
 	get_empty_page(tsk,address);
-	if (tsk != current)
-		return;
-	if (address >= tsk->end_data && address < tsk->brk)
-		return;
-	if (address+8192 >= (user_esp & 0xfffff000) && 
-	    address <= current->start_stack)
-		return;
-	send_sig(SIGSEGV,tsk,1);
-	return;
 }
 
 /*
@@ -878,7 +887,6 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
 	unsigned long address;
 	unsigned long user_esp = 0;
-	unsigned long stack_limit;
 	unsigned int bit;
 
 	/* get the address */
@@ -896,19 +904,21 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 			do_wp_page(error_code, address, current, user_esp);
 		else
 			do_no_page(error_code, address, current, user_esp);
-		if (!user_esp)
-			return;
-		stack_limit = current->rlim[RLIMIT_STACK].rlim_cur;
-		if (stack_limit >= RLIM_INFINITY)
-			return;
-		if (stack_limit >= current->start_stack)
-			return;
-		stack_limit = current->start_stack - stack_limit;
-		if (user_esp < stack_limit)
-			send_sig(SIGSEGV, current, 1);
 		return;
 	}
-	printk("Unable to handle kernel paging request at address %08x\n",address);
+	address -= TASK_SIZE;
+	if (wp_works_ok < 0 && address == 0 && (error_code & PAGE_PRESENT)) {
+		wp_works_ok = 1;
+		pg0[0] = PAGE_SHARED;
+		printk("This processor honours the WP bit even when in supervisor mode. Good.\n");
+		return;
+	}
+	if (address < PAGE_SIZE) {
+		printk("Unable to handle kernel NULL pointer dereference");
+		pg0[0] = PAGE_SHARED;
+	} else
+		printk("Unable to handle kernel paging request");
+	printk(" at address %08lx\n",address);
 	die_if_kernel("Oops", regs, error_code);
 	do_exit(SIGKILL);
 }
@@ -1005,11 +1015,14 @@ unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 	unsigned long address;
 
 /*
- * Physical page 0 is special: it's a "zero-page", and is guaranteed to
- * stay that way - it's write-protected and when there is a c-o-w, the
- * mm handler treats it specially.
+ * Physical page 0 is special; it's not touched by Linux since BIOS
+ * and SMM (for laptops with [34]86/SL chips) may need it.  It is read
+ * and write protected to detect null pointer references in the
+ * kernel.
  */
+#if 0
 	memset((void *) 0, 0, PAGE_SIZE);
+#endif
 	start_mem = PAGE_ALIGN(start_mem);
 	address = 0;
 	pg_dir = swapper_pg_dir;
@@ -1024,7 +1037,7 @@ unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 		pg_dir++;
 		pg_table = (unsigned long *) (tmp & PAGE_MASK);
 		for (tmp = 0 ; tmp < PTRS_PER_PAGE ; tmp++,pg_table++) {
-			if (address && address < end_mem)
+			if (address < end_mem)
 				*pg_table = address | PAGE_SHARED;
 			else
 				*pg_table = 0;
@@ -1066,7 +1079,9 @@ void mem_init(unsigned long start_low_mem,
 		mem_map[MAP_NR(start_mem)] = 0;
 		start_mem += PAGE_SIZE;
 	}
+#ifdef CONFIG_SOUND
 	sound_mem_init();
+#endif
 	free_page_list = 0;
 	nr_free_pages = 0;
 	for (tmp = 0 ; tmp < end_mem ; tmp += PAGE_SIZE) {
@@ -1084,12 +1099,21 @@ void mem_init(unsigned long start_low_mem,
 		nr_free_pages++;
 	}
 	tmp = nr_free_pages << PAGE_SHIFT;
-	printk("Memory: %dk/%dk available (%dk kernel code, %dk reserved, %dk data)\n",
+	printk("Memory: %luk/%luk available (%dk kernel code, %dk reserved, %dk data)\n",
 		tmp >> 10,
 		end_mem >> 10,
 		codepages << (PAGE_SHIFT-10),
 		reservedpages << (PAGE_SHIFT-10),
 		datapages << (PAGE_SHIFT-10));
+/* test if the WP bit is honoured in supervisor mode */
+	wp_works_ok = -1;
+	pg0[0] = PAGE_READONLY;
+	invalidate();
+	__asm__ __volatile__("movb 0,%%al ; movb %%al,0": : :"ax", "memory");
+	pg0[0] = 0;
+	invalidate();
+	if (wp_works_ok < 0)
+		wp_works_ok = 0;
 	return;
 }
 
@@ -1124,12 +1148,10 @@ void file_mmap_nopage(int error_code, struct vm_area_struct * area, unsigned lon
 {
 	struct inode * inode = area->vm_inode;
 	unsigned int block;
-	unsigned int clear;
 	unsigned long page;
-	unsigned long tmp;
 	int nr[8];
 	int i, j;
-	int prot = area->vm_page_prot; /* prot for buffer cache.. */
+	int prot = area->vm_page_prot;
 
 	address &= PAGE_MASK;
 	block = address - area->vm_start + area->vm_offset;
@@ -1149,30 +1171,15 @@ void file_mmap_nopage(int error_code, struct vm_area_struct * area, unsigned lon
 	}
 	for (i=0, j=0; i< PAGE_SIZE ; j++, block++, i += inode->i_sb->s_blocksize)
 		nr[j] = bmap(inode,block);
-
-	/*
-	 * If we don't mmap a whole page, we have to clear the end of the page,
-	 * which also means that we can't share the page with the buffer cache.
-	 * This is easy to handle by giving the 'bread_page()' a protection mask
-	 * that contains PAGE_RW, as the cache code won't try to share then..
-	 */
-	clear = 0;
-	if (address + PAGE_SIZE > area->vm_end) {
-		clear = address + PAGE_SIZE - area->vm_end;
-		prot |= PAGE_RW;
-	}
+	if (error_code & PAGE_RW)
+		prot |= PAGE_RW | PAGE_DIRTY;
 	page = bread_page(page, inode->i_dev, nr, inode->i_sb->s_blocksize, prot);
 
-	if (!(error_code & PAGE_RW)) {
+	if (!(prot & PAGE_RW)) {
 		if (share_page(area, area->vm_task, inode, address, error_code, page))
 			return;
 	}
-
-	tmp = page + PAGE_SIZE;
-	while (clear--) {
-		*(char *)--tmp = 0;
-	}
-	if (put_page(area->vm_task,page,address,area->vm_page_prot))
+	if (put_page(area->vm_task,page,address,prot))
 		return;
 	free_page(page);
 	oom(current);
@@ -1216,4 +1223,5 @@ struct vm_operations_struct file_mmap = {
 	file_mmap_nopage,	/* nopage */
 	NULL,			/* wppage */
 	file_mmap_share,	/* share */
+	NULL,			/* unmap */
 };

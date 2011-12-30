@@ -51,6 +51,7 @@
 #define TIOCSLCKTRMIOS	0x5457
 
 /* Used for packet mode */
+#define TIOCPKT_DATA		 0
 #define TIOCPKT_FLUSHREAD	 1
 #define TIOCPKT_FLUSHWRITE	 2
 #define TIOCPKT_STOP		 4
@@ -237,5 +238,6 @@ struct termios {
 #define N_TTY		0
 #define N_SLIP		1
 #define N_MOUSE		2
+#define N_PPP		3
 
 #endif

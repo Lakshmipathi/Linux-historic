@@ -59,6 +59,10 @@ struct ip_config {
 #define SIOCSIFMEM	0x8920		/* set memory address (BSD)	*/
 #define SIOCGIFMTU	0x8921		/* get MTU size			*/
 #define SIOCSIFMTU	0x8922		/* set MTU size			*/
+#define	SIOCGIFHWADDR	0x8923		/* get hardware address		*/
+#define	SIOCSIFHWADDR	0x8924		/* set hardware address (NI)	*/
+#define SIOCGIFENCAP	0x8925		/* get/set slip encapsulation   */
+#define SIOCSIFENCAP	0x8926		
 
 /* Routing table calls. */
 #define SIOCADDRT	0x8940		/* add routing table entry	*/

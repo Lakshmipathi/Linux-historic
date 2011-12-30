@@ -11,7 +11,12 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
+#include <linux/kernel_stat.h>
 #include <linux/tty.h>
+#include <linux/user.h>
+#include <linux/a.out.h>
+#include <linux/string.h>
+#include <linux/mman.h>
 
 #include <asm/segment.h>
 #include <asm/io.h>
@@ -22,6 +27,51 @@
 #ifdef CONFIG_DEBUG_MALLOC
 int get_malloc(char * buffer);
 #endif
+
+static int read_core(struct inode * inode, struct file * file,char * buf, int count)
+{
+	unsigned long p = file->f_pos;
+	int read;
+	int count1;
+	char * pnt;
+	struct user dump;
+
+	memset(&dump, 0, sizeof(struct user));
+	dump.magic = CMAGIC;
+	dump.u_dsize = high_memory >> 12;
+
+	if (count < 0)
+		return -EINVAL;
+	if (p >= high_memory)
+		return 0;
+	if (count > high_memory - p)
+		count = high_memory - p;
+	read = 0;
+
+	if (p < sizeof(struct user) && count > 0) {
+		count1 = count;
+		if (p + count1 > sizeof(struct user))
+			count1 = sizeof(struct user)-p;
+		pnt = (char *) &dump + p;
+		memcpy_tofs(buf,(void *) pnt, count1);
+		buf += count1;
+		p += count1;
+		count -= count1;
+		read += count1;
+	}
+
+	while (p < 2*PAGE_SIZE && count > 0) {
+		put_fs_byte(0,buf);
+		buf++;
+		p++;
+		count--;
+		read++;
+	}
+	memcpy_tofs(buf,(void *) (p - PAGE_SIZE),count);
+	read += count;
+	file->f_pos += read;
+	return read;
+}
 
 static int get_loadavg(char * buffer)
 {
@@ -36,14 +86,41 @@ static int get_loadavg(char * buffer)
 		LOAD_INT(c), LOAD_FRAC(c));
 }
 
+static int get_kstat(char * buffer)
+{
+        return sprintf(buffer,	"cpu  %u %u %u %lu\n"
+        			"disk %u %u %u %u\n"
+        			"page %u %u\n"
+        			"swap %u %u\n"
+        			"intr %u\n"
+        			"ctxt %u\n"
+        			"btime %lu\n",
+                kstat.cpu_user,
+                kstat.cpu_nice,
+                kstat.cpu_system,
+                jiffies - (kstat.cpu_user + kstat.cpu_nice + kstat.cpu_system),
+                kstat.dk_drive[0],
+                kstat.dk_drive[1],
+                kstat.dk_drive[2],
+                kstat.dk_drive[3],
+                kstat.pgpgin,
+                kstat.pgpgout,
+                kstat.pswpin,
+                kstat.pswpout,
+                kstat.interrupts,
+                kstat.context_swtch,
+                xtime.tv_sec - jiffies / HZ);
+}
+
+
 static int get_uptime(char * buffer)
 {
 	unsigned long uptime;
 	unsigned long idle;
 
-	uptime = jiffies + jiffies_offset;
+	uptime = jiffies;
 	idle = task[0]->utime + task[0]->stime;
-	return sprintf(buffer,"%d.%02d %d.%02d\n",
+	return sprintf(buffer,"%lu.%02lu %lu.%02lu\n",
 		uptime / HZ,
 		uptime % HZ,
 		idle / HZ,
@@ -57,8 +134,8 @@ static int get_meminfo(char * buffer)
 	si_meminfo(&i);
 	si_swapinfo(&i);
 	return sprintf(buffer, "        total:   used:    free:   shared:  buffers:\n"
-		"Mem:  %8d %8d %8d %8d %8d\n"
-		"Swap: %8d %8d %8d\n",
+		"Mem:  %8lu %8lu %8lu %8lu %8lu\n"
+		"Swap: %8lu %8lu %8lu\n",
 		i.totalram, i.totalram-i.freeram, i.freeram, i.sharedram, i.bufferram,
 		i.totalswap, i.totalswap-i.freeswap, i.freeswap);
 }
@@ -211,9 +288,9 @@ static int get_stat(int pid, char * buffer)
 		tty_pgrp = tty_table[tty_pgrp]->pgrp;
 	else
 		tty_pgrp = -1;
-	return sprintf(buffer,"%d (%s) %c %d %d %d %d %d %u %u \
-%u %u %u %d %d %d %d %d %d %u %u %d %u %u %u %u %u %u %u %u %d \
-%d %d %d %u\n",
+	return sprintf(buffer,"%d (%s) %c %d %d %d %d %d %lu %lu \
+%lu %lu %lu %ld %ld %ld %ld %ld %ld %lu %lu %ld %lu %u %u %lu %lu %lu %lu %lu %lu \
+%lu %lu %lu %lu\n",
 		pid,
 		(*p)->comm,
 		state,
@@ -300,6 +377,72 @@ static int get_statm(int pid, char * buffer)
 		       size, resident, share, trs, lrs, drs, dt);
 }
 
+static int get_maps(int pid, char *buf)
+{
+	int sz = 0;
+	struct task_struct **p = get_task(pid);
+	struct vm_area_struct *map;
+
+	if (!p || !*p)
+		return 0;
+
+	for(map = (*p)->mmap; map != NULL; map = map->vm_next) {
+		char str[7], *cp = str;
+		int prot = map->vm_page_prot;
+		int perms, flags;
+		int end = sz + 80;	/* Length of line */
+		dev_t dev;
+		unsigned long ino;
+
+		/*
+		 * This tries to get an "rwxsp" string out of silly
+		 * intel page permissions.  The vm_area_struct should
+		 * probably have the original mmap args preserved.
+		 */
+		
+		flags = perms = 0;
+
+		if ((prot & PAGE_READONLY) == PAGE_READONLY)
+			perms |= PROT_READ | PROT_EXEC;
+		if (prot & (PAGE_COW|PAGE_RW)) {
+			perms |= PROT_WRITE | PROT_READ;
+			flags = prot & PAGE_COW ? MAP_PRIVATE : MAP_SHARED;
+		}
+
+		*cp++ = perms & PROT_READ ? 'r' : '-';
+		*cp++ = perms & PROT_WRITE ? 'w' : '-';
+		*cp++ = perms & PROT_EXEC ? 'x' : '-';
+		*cp++ = flags & MAP_SHARED ? 's' : '-';
+		*cp++ = flags & MAP_PRIVATE ? 'p' : '-';
+		*cp++ = 0;
+		
+		if (end >= PAGE_SIZE) {
+			sprintf(buf+sz, "...\n");
+			break;
+		}
+		
+		if (map->vm_inode != NULL) {
+			dev = map->vm_inode->i_dev;
+			ino = map->vm_inode->i_ino;
+		} else {
+			dev = 0;
+			ino = 0;
+		}
+
+		sz += sprintf(buf+sz, "%08lx-%08lx %s %08lx %02x:%02x %lu\n",
+			      map->vm_start, map->vm_end, str, map->vm_offset,
+			      MAJOR(dev),MINOR(dev), ino);
+		if (sz > end) {
+			printk("get_maps: end(%d) < sz(%d)\n", end, sz);
+			break;
+		}
+	}
+	
+	return sz;
+}
+
+asmlinkage int get_module_list( char *);
+
 static int array_read(struct inode * inode, struct file * file,char * buf, int count)
 {
 	char * page;
@@ -344,6 +487,18 @@ static int array_read(struct inode * inode, struct file * file,char * buf, int c
 			length = get_malloc(page);
 			break;
 #endif
+		case 14:
+			free_page((unsigned long) page);
+			return read_core(inode, file, buf, count);
+		case 15:
+			length = get_maps(pid, page);
+			break;
+		case 16:
+			length = get_module_list(page);
+			break;
+		case 17:
+			length = get_kstat(page);
+			break;
 		default:
 			free_page((unsigned long) page);
 			return -EBADF;
