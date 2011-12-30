@@ -147,6 +147,7 @@ static int sync_buffers(dev_t dev, int wait)
 	   2) wait for completion by waiting for all buffers to unlock. */
  repeat:
 	retry = 0;
+ repeat2:
 	ncount = 0;
 	/* We search all lists as a failsafe mechanism, not because we expect
 	   there to be dirty buffers on any of the other lists. */
@@ -170,6 +171,7 @@ static int sync_buffers(dev_t dev, int wait)
 					  continue;
 				  }
 				  wait_on_buffer (bh);
+				  goto repeat2;
 			  }
 			 /* If an unlocked buffer is not uptodate, there has
 			     been an IO error. Skip it. */
@@ -183,6 +185,9 @@ static int sync_buffers(dev_t dev, int wait)
 			    on the third pass. */
 			 if (!bh->b_dirt || pass>=2)
 				  continue;
+			 /* don't bother about locked buffers */
+			 if (bh->b_lock)
+				 continue;
 			 bh->b_count++;
 			 bh->b_flushtime = 0;
 			 ll_rw_block(WRITE, 1, &bh);
@@ -1061,7 +1066,7 @@ static unsigned long try_to_load_aligned(unsigned long address,
 	buffermem += PAGE_SIZE;
 	bh->b_this_page = tmp;
 	mem_map[MAP_NR(address)]++;
-	buffer_pages[address >> PAGE_SHIFT] = bh;
+	buffer_pages[MAP_NR(address)] = bh;
 	read_buffers(arr,block);
 	while (block-- > 0)
 		brelse(arr[block]);
@@ -1190,7 +1195,7 @@ static int grow_buffers(int pri, int size)
 			break;
 	}
 	free_list[isize] = bh;
-	buffer_pages[page >> PAGE_SHIFT] = bh;
+	buffer_pages[MAP_NR(page)] = bh;
 	tmp->b_this_page = bh;
 	wake_up(&buffer_wait);
 	buffermem += PAGE_SIZE;
@@ -1234,7 +1239,7 @@ static int try_to_free(struct buffer_head * bh, struct buffer_head ** bhp)
 		put_unused_buffer_head(p);
 	} while (tmp != bh);
 	buffermem -= PAGE_SIZE;
-	buffer_pages[page >> PAGE_SHIFT] = NULL;
+	buffer_pages[MAP_NR(page)] = NULL;
 	free_page(page);
 	return !mem_map[MAP_NR(page)];
 }
@@ -1538,7 +1543,7 @@ static unsigned long try_to_generate_cluster(dev_t dev, int block, int size)
 			break;
 	}
 	buffermem += PAGE_SIZE;
-	buffer_pages[page >> PAGE_SHIFT] = bh;
+	buffer_pages[MAP_NR(page)] = bh;
 	bh->b_this_page = tmp;
 	while (nblock-- > 0)
 		brelse(arr[nblock]);
@@ -1605,9 +1610,9 @@ void buffer_init(void)
 						     sizeof(struct buffer_head *));
 
 
-	buffer_pages = (struct buffer_head **) vmalloc((high_memory >>PAGE_SHIFT) * 
+	buffer_pages = (struct buffer_head **) vmalloc(MAP_NR(high_memory) * 
 						     sizeof(struct buffer_head *));
-	for (i = 0 ; i < high_memory >> PAGE_SHIFT ; i++)
+	for (i = 0 ; i < MAP_NR(high_memory) ; i++)
 		buffer_pages[i] = NULL;
 
 	for (i = 0 ; i < nr_hash ; i++)
@@ -1735,31 +1740,37 @@ asmlinkage int sys_bdflush(int func, int data)
 	int ncount;
 	struct buffer_head * bh, *next;
 
-	if(!suser()) return -EPERM;
+	if (!suser())
+		return -EPERM;
 
-	if(func == 1)
+	if (func == 1)
 		 return sync_old_buffers();
 
 	/* Basically func 0 means start, 1 means read param 1, 2 means write param 1, etc */
-	if(func >= 2){
+	if (func >= 2) {
 		i = (func-2) >> 1;
-		if (i < 0 || i >= N_PARAM) return -EINVAL;
+		if (i < 0 || i >= N_PARAM)
+			return -EINVAL;
 		if((func & 1) == 0) {
 			error = verify_area(VERIFY_WRITE, (void *) data, sizeof(int));
-			if(error) return error;
+			if (error)
+				return error;
 			put_fs_long(bdf_prm.data[i], data);
 			return 0;
 		};
-		if(data < bdflush_min[i] || data > bdflush_max[i]) return -EINVAL;
+		if (data < bdflush_min[i] || data > bdflush_max[i])
+			return -EINVAL;
 		bdf_prm.data[i] = data;
 		return 0;
 	};
 	
-	if(bdflush_running++) return -EBUSY; /* Only one copy of this running at one time */
+	if (bdflush_running)
+		return -EBUSY; /* Only one copy of this running at one time */
+	bdflush_running++;
 	
 	/* OK, from here on is the daemon */
 	
-	while(1==1){
+	for (;;) {
 #ifdef DEBUG
 		printk("bdflush() activated...");
 #endif

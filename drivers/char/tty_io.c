@@ -1242,6 +1242,9 @@ static int tty_ioctl(struct inode * inode, struct file * file,
 		case TIOCSTI:
 			if ((current->tty != tty) && !suser())
 				return -EPERM;
+			retval = verify_area(VERIFY_READ, (void *) arg, 1);
+			if (retval)
+				return retval;
 			ch = get_fs_byte((char *) arg);
 			tty->ldisc.receive_buf(tty, &ch, &mbz, 1);
 			return 0;
@@ -1254,6 +1257,10 @@ static int tty_ioctl(struct inode * inode, struct file * file,
 				    sizeof (struct winsize));
 			return 0;
 		case TIOCSWINSZ:
+			retval = verify_area(VERIFY_READ, (void *) arg,
+					     sizeof (struct winsize));
+			if (retval)
+				return retval;			
 			memcpy_fromfs(&tmp_ws, (struct winsize *) arg,
 				      sizeof (struct winsize));
 			if (memcmp(&tmp_ws, &tty->winsize,
@@ -1279,6 +1286,9 @@ static int tty_ioctl(struct inode * inode, struct file * file,
 			redirect = real_tty;
 			return 0;
 		case FIONBIO:
+			retval = verify_area(VERIFY_READ, (void *) arg, sizeof(long));
+			if (retval)
+				return retval;
 			arg = get_fs_long((unsigned long *) arg);
 			if (arg)
 				file->f_flags |= O_NONBLOCK;
@@ -1371,6 +1381,9 @@ static int tty_ioctl(struct inode * inode, struct file * file,
 			arg = get_fs_long((unsigned long *) arg);
 			return tty_set_ldisc(tty, arg);
 		case TIOCLINUX:
+			retval = verify_area(VERIFY_READ, (void *) arg, 1);
+			if (retval)
+				return retval;
 			switch (get_fs_byte((char *)arg))
 			{
 				case 0: 
@@ -1535,8 +1548,10 @@ int tty_register_driver(struct tty_driver *driver)
 		return 0;
 
 	error = register_chrdev(driver->major, driver->name, &tty_fops);
-	if (error)
+	if (error < 0)
 		return error;
+	else if(driver->major == 0)
+		driver->major = error;
 
 	if (!driver->put_char)
 		driver->put_char = tty_default_put_char;
@@ -1545,13 +1560,13 @@ int tty_register_driver(struct tty_driver *driver)
 	driver->next = tty_drivers;
 	tty_drivers->prev = driver;
 	tty_drivers = driver;
-	return 0;
+	return error;
 }
 
 /*
  * Initialize the console device. This is called *early*, so
  * we can't necessarily depend on lots of kernel help here.
- * Jus do some early initializations, and do the complex setup
+ * Just do some early initializations, and do the complex setup
  * later.
  */
 long console_init(long kmem_start, long kmem_end)
@@ -1589,7 +1604,7 @@ long tty_init(long kmem_start)
 		panic("size of tty structure > PAGE_SIZE!");
 	if (register_chrdev(TTY_MAJOR,"tty",&tty_fops))
 		panic("unable to get major %d for tty device", TTY_MAJOR);
-	if (register_chrdev(TTYAUX_MAJOR,"tty",&tty_fops))
+	if (register_chrdev(TTYAUX_MAJOR,"cua",&tty_fops))
 		panic("unable to get major %d for tty device", TTYAUX_MAJOR);
 
 	kmem_start = kbd_init(kmem_start);

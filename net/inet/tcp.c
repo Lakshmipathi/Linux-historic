@@ -79,14 +79,13 @@
  *		Alan Cox	:	TCP fast path debugging
  *		Alan Cox	:	Window clamping
  *		Michael Riepe	:	Bug in tcp_check()
+ *		Matt Dillon	:	More TCP improvements and RST bug fixes
+ *		Matt Dillon	:	Yet more small nasties remove from the TCP code
+ *					(Be very nice to this man if tcp finally works 100%) 8)
+ *		Alan Cox	:	BSD accept semantics. 
  *
  *
  * To Fix:
- *			Possibly a problem with accept(). BSD accept never fails after
- *		it causes a select. Linux can - given the official select semantics I
- *		feel that _really_ its the BSD network programs that are bust (notably
- *		inetd, which hangs occasionally because of this).
- *
  *			Fast path the code. Two things here - fix the window calculation
  *		so it doesn't iterate over the queue, also spot packets with no funny
  *		options arriving in order and process directly.
@@ -173,6 +172,20 @@ static __inline__ int min(unsigned int a, unsigned int b)
 	return(b);
 }
 
+#undef STATE_TRACE
+
+static __inline__ void tcp_set_state(struct sock *sk, int state)
+{
+	if(sk->state==TCP_ESTABLISHED)
+		tcp_statistics.TcpCurrEstab--;
+#ifdef STATE_TRACE
+	if(sk->debug)
+		printk("TCP sk=%s, State %d -> %d\n",sk, sk->state,state);
+#endif	
+	sk->state=state;
+	if(state==TCP_ESTABLISHED)
+		tcp_statistics.TcpCurrEstab++;
+}
 
 /* This routine picks a TCP windows for a socket based on
    the following constraints
@@ -210,12 +223,46 @@ int tcp_select_window(struct sock *sk)
 }
 
 /*
+ *	Find someone to 'accept'. Must be called with
+ *	sk->inuse=1 or cli()
+ */ 
+
+static struct sk_buff *tcp_find_established(struct sock *s)
+{
+	struct sk_buff *p=skb_peek(&s->receive_queue);
+	if(p==NULL)
+		return NULL;
+	do
+	{
+		if(p->sk->state>=TCP_ESTABLISHED)
+			return p;
+		p=p->next;
+	}
+	while(p!=skb_peek(&s->receive_queue));
+	return NULL;
+}
+
+static struct sk_buff *tcp_dequeue_established(struct sock *s)
+{
+	struct sk_buff *skb;
+	unsigned long flags;
+	save_flags(flags);
+	cli(); 
+	skb=tcp_find_established(s);
+	if(skb!=NULL)
+		skb_unlink(skb);	/* Take it off the queue */
+	restore_flags(flags);
+	return skb;
+}
+
+
+/*
  *	Enter the time wait state. 
  */
 
 static void tcp_time_wait(struct sock *sk)
 {
-	sk->state = TCP_TIME_WAIT;
+	tcp_set_state(sk,TCP_TIME_WAIT);
 	sk->shutdown = SHUTDOWN_MASK;
 	if (!sk->dead)
 		sk->state_change(sk);
@@ -304,7 +351,7 @@ void tcp_err(int err, unsigned char *header, unsigned long daddr,
 		if (sk->state == TCP_SYN_SENT) 
 		{
 			tcp_statistics.TcpAttemptFails++;
-			sk->state = TCP_CLOSE;
+			tcp_set_state(sk,TCP_CLOSE);
 			sk->error_report(sk);		/* Wake people up to see the error (see connect in sock.c) */
 		}
 		sk->err = icmp_err_convert[err & 0xff].errno;		
@@ -350,7 +397,7 @@ static int tcp_readable(struct sock *sk)
 		sum = skb->len -(counted - skb->h.th->seq);	/* Length - header but start from where we are up to (avoid overlaps) */
 		if (skb->h.th->syn)
 			sum++;
-		if (sum >= 0) 
+		if (sum > 0) 
 		{					/* Add it up, move on */
 			amount += sum;
 			if (skb->h.th->syn) 
@@ -391,7 +438,7 @@ static int tcp_select(struct sock *sk, int sel_type, select_table *wait)
 				printk("-select out");
 			if (skb_peek(&sk->receive_queue) != NULL) 
 			{
-				if (sk->state == TCP_LISTEN || tcp_readable(sk)) 
+				if ((sk->state == TCP_LISTEN && tcp_find_established(sk)) || tcp_readable(sk)) 
 				{
 					release_sock(sk);
 					if(sk->debug)
@@ -430,12 +477,11 @@ static int tcp_select(struct sock *sk, int sel_type, select_table *wait)
 			}
 
 			/*
-			 * FIXME:
-			 * Hack so it will probably be able to write
-			 * something if it says it's ok to write.
+			 * This is now right thanks to a small fix
+			 * by Matt Dillon.
 			 */
 			
-			if (sk->prot->wspace(sk) >= sk->mss) 
+			if (sk->prot->wspace(sk) >= sk->mtu+128+sk->prot->max_header) 
 			{
 				release_sock(sk);
 				/* This should cause connect to work ok. */
@@ -1647,11 +1693,11 @@ void tcp_shutdown(struct sock *sk, int how)
 		prot->wfree(sk,buff->mem_addr, buff->mem_len);
 
 		if (sk->state == TCP_ESTABLISHED)
-			sk->state = TCP_FIN_WAIT1;
+			tcp_set_state(sk,TCP_FIN_WAIT1);
 		else if(sk->state == TCP_CLOSE_WAIT)
-			sk->state = TCP_LAST_ACK;
+			tcp_set_state(sk,TCP_LAST_ACK);
 		else
-			sk->state = TCP_FIN_WAIT2;
+			tcp_set_state(sk,TCP_FIN_WAIT2);
 
 		release_sock(sk);
 		return;
@@ -1694,11 +1740,11 @@ void tcp_shutdown(struct sock *sk, int how)
 	}
 
 	if (sk->state == TCP_ESTABLISHED) 
-		sk->state = TCP_FIN_WAIT1;
+		tcp_set_state(sk,TCP_FIN_WAIT1);
 	else if (sk->state == TCP_CLOSE_WAIT)
-		sk->state = TCP_LAST_ACK;
+		tcp_set_state(sk,TCP_LAST_ACK);
 	else
-		sk->state = TCP_FIN_WAIT2;
+		tcp_set_state(sk,TCP_FIN_WAIT2);
 
 	release_sock(sk);
 }
@@ -2174,25 +2220,30 @@ static void tcp_close(struct sock *sk, int timeout)
 	if (!sk->dead) 
 	  	sk->state_change(sk);
 
-	/*
-	 *	We need to flush the recv. buffs. 
-	 */
-
-	if (skb_peek(&sk->receive_queue) != NULL) 
+	if (timeout == 0) 
 	{
-		struct sk_buff *skb;
-		if(sk->debug)
-			printk("Clean rcv queue\n");
-		while((skb=skb_dequeue(&sk->receive_queue))!=NULL)
+		/*
+		 *  We need to flush the recv. buffs.  We do this only on the
+		 *  descriptor close, not protocol-sourced closes, because the
+		 *  reader process may not have drained the data yet!
+		 */
+
+		if (skb_peek(&sk->receive_queue) != NULL) 
 		{
-			/* The +1 is not needed because the FIN takes up sequence space and
-			   is not read!!! */
-			if(skb->len > 0 && after(skb->h.th->seq + skb->len/* + 1 */ , sk->copied_seq))
-				need_reset = 1;
-			kfree_skb(skb, FREE_READ);
+			struct sk_buff *skb;
+			if(sk->debug)
+        			printk("Clean rcv queue\n");
+			while((skb=skb_dequeue(&sk->receive_queue))!=NULL)
+			{
+				/* The +1 is not needed because the FIN takes up seq
+				   is not read!!! */
+				if(skb->len > 0 && after(skb->h.th->seq + skb->len , sk->copied_seq))
+					need_reset = 1;
+				kfree_skb(skb, FREE_READ);
+			}
+			if(sk->debug)
+				printk("Cleaned.\n");
 		}
-		if(sk->debug)
-			printk("Cleaned.\n");
 	}
 
 	/*
@@ -2248,12 +2299,12 @@ static void tcp_close(struct sock *sk, int timeout)
 			 */
 			if (timeout) 
 			{
-		  		sk->state = TCP_CLOSE;
+		  		tcp_set_state(sk,TCP_CLOSE);
 			}
 			release_sock(sk);
 			return;
 		case TCP_LISTEN:
-			sk->state = TCP_CLOSE;
+			tcp_set_state(sk,TCP_CLOSE);
 			release_sock(sk);
 			return;
 		case TCP_CLOSE:
@@ -2273,7 +2324,7 @@ static void tcp_close(struct sock *sk, int timeout)
 				   first. Anyway it might work now */
 				release_sock(sk);
 				if (sk->state != TCP_CLOSE_WAIT)
-					sk->state = TCP_ESTABLISHED;
+					tcp_set_state(sk,TCP_ESTABLISHED);
 				reset_timer(sk, TIME_CLOSE, 100);
 				return;
 			}
@@ -2300,9 +2351,9 @@ static void tcp_close(struct sock *sk, int timeout)
 				 */
 
 				if(sk->state==TCP_ESTABLISHED)
-					sk->state=TCP_FIN_WAIT1;
+					tcp_set_state(sk,TCP_FIN_WAIT1);
 				else
-					sk->state=TCP_FIN_WAIT2;
+					tcp_set_state(sk,TCP_FIN_WAIT2);
 				reset_timer(sk, TIME_CLOSE,4*sk->rto);
 				if(timeout)
 					tcp_time_wait(sk);
@@ -2358,11 +2409,11 @@ static void tcp_close(struct sock *sk, int timeout)
 			 */
 
 			if (sk->state == TCP_ESTABLISHED)
-			    sk->state = TCP_FIN_WAIT1;
+				tcp_set_state(sk,TCP_FIN_WAIT1);
 			else if (sk->state == TCP_CLOSE_WAIT)
-			    sk->state = TCP_LAST_ACK;
+				tcp_set_state(sk,TCP_LAST_ACK);
 			else if (sk->state != TCP_CLOSING)
-			    sk->state = TCP_FIN_WAIT2;
+				tcp_set_state(sk,TCP_FIN_WAIT2);
 	}
 	release_sock(sk);
 }
@@ -2503,35 +2554,25 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th, unsigned long saddr, int 
 	if (sk->retransmits && sk->timeout == TIME_KEEPOPEN)
 	  	sk->retransmits = 0;
 
-#if 0
-/*
- *	Not quite clear why the +1 and -1 here, and why not +1 in next line 
- */
- 
-	if (after(ack, sk->sent_seq+1) || before(ack, sk->rcv_ack_seq-1)) 
-#else	
 	if (after(ack, sk->sent_seq) || before(ack, sk->rcv_ack_seq)) 
-#endif	
 	{
 		if(sk->debug)
 			printk("Ack ignored %lu %lu\n",ack,sk->sent_seq);
+			
 		/*
-		 * What is all this crap? the ack sequence number is bad or
-		 * old, we should return 0 to ignore the packet. XXX
+		 *	Keepalive processing.
 		 */
-		return(0);
-#ifdef NOTDEF
-		if (after(ack, sk->sent_seq) ||
-		   (sk->state != TCP_ESTABLISHED && sk->state != TCP_CLOSE_WAIT)) 
+		 
+		if (after(ack, sk->sent_seq) || (sk->state != TCP_ESTABLISHED && sk->state != TCP_CLOSE_WAIT)) 
 		{
 			return(0);
 		}
 		if (sk->keepopen) 
 		{
-			reset_timer(sk, TIME_KEEPOPEN, TCP_TIMEOUT_LEN);
+			if(sk->timeout==TIME_KEEPOPEN)
+				reset_timer(sk, TIME_KEEPOPEN, TCP_TIMEOUT_LEN);
 		}
 		return(1);
-#endif
 	}
 
 	if (len != th->doff*4) 
@@ -2915,7 +2956,7 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th, unsigned long saddr, int 
 		if (sk->rcv_ack_seq == sk->write_seq && sk->acked_seq == sk->fin_seq) 
 		{
 			flag |= 1;
-			sk->state = TCP_CLOSE;
+			tcp_set_state(sk,TCP_CLOSE);
 			sk->shutdown = SHUTDOWN_MASK;
 		}
 	}
@@ -2923,7 +2964,8 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th, unsigned long saddr, int 
 	/*
 	 * Incoming ACK to a FIN we sent in the case of our initiating the close.
 	 *
-	 * Move to FIN_WAIT2 to await a FIN from the other end.
+	 * Move to FIN_WAIT2 to await a FIN from the other end. Set
+	 * SEND_SHUTDOWN but not RCV_SHUTDOWN as data can still be coming in.
 	 */
 
 	if (sk->state == TCP_FIN_WAIT1) 
@@ -2934,14 +2976,16 @@ static int tcp_ack(struct sock *sk, struct tcphdr *th, unsigned long saddr, int 
 		if (sk->rcv_ack_seq == sk->write_seq) 
 		{
 			flag |= 1;
+#ifdef THIS_BIT_IS_WRONG			
 			if (sk->acked_seq != sk->fin_seq) 
 			{
 				tcp_time_wait(sk);
 			}
 			else
+#endif			
 			{
-				sk->shutdown = SHUTDOWN_MASK;
-				sk->state = TCP_FIN_WAIT2;
+				sk->shutdown |= SEND_SHUTDOWN;
+				tcp_set_state(sk,TCP_FIN_WAIT2);
 			}
 		}
 	}
@@ -3047,7 +3091,7 @@ static int tcp_data(struct sk_buff *skb, struct sock *sk,
 	{
 		new_seq= th->seq + skb->len + th->syn;	/* Right edge of _data_ part of frame */
 		
-		if(after(new_seq,sk->copied_seq+1))	/* If the right edge of this frame is after the last copied byte
+		if(after(new_seq,sk->/*copied*/acked_seq+1))	/* If the right edge of this frame is after the last copied byte
 							   then it contains data we will never touch. We send an RST to 
 							   ensure the far end knows it never got to the application */
 		{
@@ -3055,7 +3099,7 @@ static int tcp_data(struct sk_buff *skb, struct sock *sk,
 			tcp_reset(sk->saddr, sk->daddr, skb->h.th,
 				sk->prot, NULL, skb->dev, sk->ip_tos, sk->ip_ttl);
 			tcp_statistics.TcpEstabResets++;
-			sk->state = TCP_CLOSE;
+			tcp_set_state(sk,TCP_CLOSE);
 			sk->err = EPIPE;
 			sk->shutdown = SHUTDOWN_MASK;
 			kfree_skb(skb, FREE_READ);
@@ -3371,7 +3415,6 @@ static inline int tcp_urg(struct sock *sk, struct tcphdr *th,
  *  If we are in FINWAIT-2, a received FIN moves us to TIME-WAIT.
  *
  */
- 
 static int tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th, 
 	 unsigned long saddr, struct device *dev)
 {
@@ -3393,8 +3436,7 @@ static int tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th,
 			 */
 			reset_timer(sk, TIME_CLOSE, TCP_TIMEOUT_LEN);
 			/*sk->fin_seq = th->seq+1;*/
-			tcp_statistics.TcpCurrEstab--;
-			sk->state = TCP_CLOSE_WAIT;
+			tcp_set_state(sk,TCP_CLOSE_WAIT);
 			if (th->rst)
 				sk->shutdown = SHUTDOWN_MASK;
 			break;
@@ -3422,10 +3464,9 @@ static int tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th,
 			 * XXX timeout not set properly
 			 */
 
-			tcp_statistics.TcpCurrEstab--;
 			reset_timer(sk, TIME_CLOSE, TCP_TIMEWAIT_LEN);
 			/*sk->fin_seq = th->seq+1;*/
-			sk->state = TCP_CLOSING;
+			tcp_set_state(sk,TCP_CLOSING);
 			break;
 		case TCP_FIN_WAIT2:
 			/*
@@ -3433,7 +3474,8 @@ static int tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th,
 			 */
 			reset_timer(sk, TIME_CLOSE, TCP_TIMEWAIT_LEN);
 			/*sk->fin_seq = th->seq+1;*/
-			sk->state = TCP_TIME_WAIT;
+			sk->shutdown|=SHUTDOWN_MASK;
+			tcp_set_state(sk,TCP_TIME_WAIT);
 			break;
 		case TCP_CLOSE:
 			/*
@@ -3441,7 +3483,7 @@ static int tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th,
 			 */
 			break;
 		default:
-			sk->state = TCP_LAST_ACK;
+			tcp_set_state(sk,TCP_LAST_ACK);
 	
 			/* Start the timers. */
 			reset_timer(sk, TIME_CLOSE, TCP_TIMEWAIT_LEN);
@@ -3475,7 +3517,7 @@ tcp_accept(struct sock *sk, int flags)
 	cli();
 	sk->inuse = 1;
 
-	while((skb = skb_dequeue(&sk->receive_queue)) == NULL) 
+	while((skb = tcp_dequeue_established(sk)) == NULL) 
 	{
 		if (flags & O_NONBLOCK) 
 		{
@@ -3661,7 +3703,7 @@ static int tcp_connect(struct sock *sk, struct sockaddr_in *usin, int addr_len)
 	 *	This must go first otherwise a really quick response will get reset. 
 	 */
 
-	sk->state = TCP_SYN_SENT;
+	tcp_set_state(sk,TCP_SYN_SENT);
 /*	sk->rtt = TCP_CONNECT_TIME;*/
 	sk->rto = TCP_TIMEOUT_INIT;
 	reset_timer(sk, TIME_WRITE, sk->rto);	/* Timer for repeating the SYN until an answer */
@@ -3959,7 +4001,7 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 			{
 				sk->zapped=1;
 				sk->err = ECONNRESET;
- 				sk->state = TCP_CLOSE;
+ 				tcp_set_state(sk,TCP_CLOSE);
 				sk->shutdown = SHUTDOWN_MASK;
 				if (!sk->dead) 
 				{
@@ -3986,7 +4028,6 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 			if (th->rst) 
 			{
 				tcp_statistics.TcpEstabResets++;
-				tcp_statistics.TcpCurrEstab--;
 				sk->zapped=1;
 				/* This means the thing should really be closed. */
 				sk->err = ECONNRESET;
@@ -3999,7 +4040,7 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 				 * A reset with a fin just means that
 				 * the data was not all read.
 				 */
-				sk->state = TCP_CLOSE;
+				tcp_set_state(sk,TCP_CLOSE);
 				sk->shutdown = SHUTDOWN_MASK;
 				if (!sk->dead) 
 				{
@@ -4011,10 +4052,9 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 			}
 			if (th->syn) 
 			{
-				tcp_statistics.TcpCurrEstab--;
 				tcp_statistics.TcpEstabResets++;
 				sk->err = ECONNRESET;
-				sk->state = TCP_CLOSE;
+				tcp_set_state(sk,TCP_CLOSE);
 				sk->shutdown = SHUTDOWN_MASK;
 				tcp_reset(daddr, saddr,  th, sk->prot, opt,dev, sk->ip_tos,sk->ip_ttl);
 				if (!sk->dead) {
@@ -4121,7 +4161,7 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 			{
 				tcp_statistics.TcpAttemptFails++;
 				sk->err = ECONNREFUSED;
-				sk->state = TCP_CLOSE;
+				tcp_set_state(sk,TCP_CLOSE);
 				sk->shutdown = SHUTDOWN_MASK;
 				sk->zapped = 1;
 				if (!sk->dead) 
@@ -4136,7 +4176,7 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 			{
 				if (th->syn) 
 				{
-					sk->state = TCP_SYN_RECV;
+					tcp_set_state(sk,TCP_SYN_RECV);
 				}
 				kfree_skb(skb, FREE_READ);
 				release_sock(sk);
@@ -4184,8 +4224,7 @@ tcp_rcv(struct sk_buff *skb, struct device *dev, struct options *opt,
 						return(0);
 					}
 	
-					tcp_statistics.TcpCurrEstab++;
-					sk->state = TCP_ESTABLISHED;
+					tcp_set_state(sk,TCP_ESTABLISHED);
 	
 					/*
 					 * 	Now we need to finish filling out

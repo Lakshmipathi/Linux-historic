@@ -45,6 +45,11 @@ typedef unsigned short nlink_t;
 typedef int daddr_t;
 typedef long off_t;
 
+#ifndef __STRICT_ANSI__
+#define _LOFF_T
+typedef long long loff_t;
+#endif
+
 /* bsd */
 typedef unsigned char u_char;
 typedef unsigned short u_short;

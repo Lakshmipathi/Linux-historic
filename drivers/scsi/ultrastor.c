@@ -461,11 +461,11 @@ static int ultrastor_14f_detect(Scsi_Host_Template * tpnt)
 	return FALSE;
     }
 
-    /* Final consistancy check, verify previous info. */
+    /* Final consistency check, verify previous info. */
     if (config.subversion != U34F)
 	if (!config.dma_channel || !(config_2.tfr_port & 0x2)) {
 #if (ULTRASTOR_DEBUG & UD_DETECT)
-	    printk("US14F: detect: consistancy check failed\n");
+	    printk("US14F: detect: consistency check failed\n");
 #endif
 	    return FALSE;
 	}
@@ -498,7 +498,7 @@ static int ultrastor_14f_detect(Scsi_Host_Template * tpnt)
 	       config.interrupt);
 	return FALSE;
     }
-    if (config.dma_channel && request_dma(config.dma_channel)) {
+    if (config.dma_channel && request_dma(config.dma_channel,"Ultrastor")) {
 	printk("Unable to allocate DMA channel %u for UltraStor controller.\n",
 	       config.dma_channel);
 	free_irq(config.interrupt);

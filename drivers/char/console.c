@@ -1457,13 +1457,13 @@ void poke_blanked_console(void)
 	}
 }
 
-void * memsetw(void * s,unsigned short c,int count)
+void * memsetw(void * s, unsigned short c, unsigned int count)
 {
 __asm__("cld\n\t"
 	"rep\n\t"
 	"stosw"
 	: /* no output */
-	:"a" (c),"D" (s),"c" (count)
+	:"a" (c),"D" (s),"c" (count/2)
 	:"cx","di");
 return s;
 }
@@ -2100,7 +2100,8 @@ static void clear_selection()
  */
 
 #define colourmap ((char *)0xa0000)
-#define blackwmap ((char *)0xb0000)
+/* Pauline Middelink reports that we should use 0xA0000 for the bwmap as well.. */
+#define blackwmap ((char *)0xa0000)
 #define cmapsz 8192
 #define seq_port_reg (0x3c4)
 #define seq_port_val (0x3c5)

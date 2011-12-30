@@ -79,7 +79,7 @@ struct hd_geometry {
 struct hd_driveid {
 	unsigned short	config;		/* lots of obsolete bit flags */
 	unsigned short	cyls;		/* "physical" cyls */
-	unsigned short	reserved0;	/* reserved */
+	unsigned short	reserved2;	/* reserved (word 2) */
 	unsigned short	heads;		/* "physical" heads */
 	unsigned short	track_bytes;	/* unformatted bytes per track */
 	unsigned short	sector_bytes;	/* unformatted bytes per sector */
@@ -87,23 +87,23 @@ struct hd_driveid {
 	unsigned short	vendor0;	/* vendor unique */
 	unsigned short	vendor1;	/* vendor unique */
 	unsigned short	vendor2;	/* vendor unique */
-	unsigned char	serial_no[20];	/* big_endian; 0 = not_specified */
+	unsigned char	serial_no[20];	/* 0 = not_specified */
 	unsigned short	buf_type;
 	unsigned short	buf_size;	/* 512 byte increments; 0 = not_specified */
 	unsigned short	ecc_bytes;	/* for r/w long cmds; 0 = not_specified */
-	unsigned char	fw_rev[8];	/* big_endian; 0 = not_specified */
-	unsigned char	model[40];	/* big_endian; 0 = not_specified */
+	unsigned char	fw_rev[8];	/* 0 = not_specified */
+	unsigned char	model[40];	/* 0 = not_specified */
 	unsigned char	max_multsect;	/* 0=not_implemented */
 	unsigned char	vendor3;	/* vendor unique */
 	unsigned short	dword_io;	/* 0=not_implemented; 1=implemented */
 	unsigned char	vendor4;	/* vendor unique */
-	unsigned char	capability;	/* bit0:DMA, bit1:LBA */
-	unsigned short	reserved1;	/* reserved */
+	unsigned char	capability;	/* bits 0:DMA 1:LBA 2:IORDYsw 3:IORDYsup*/
+	unsigned short	reserved50;	/* reserved (word 50) */
 	unsigned char	vendor5;	/* vendor unique */
 	unsigned char	tPIO;		/* 0=slow, 1=medium, 2=fast */
 	unsigned char	vendor6;	/* vendor unique */
 	unsigned char	tDMA;		/* 0=slow, 1=medium, 2=fast */
-	unsigned short	cur_valid;	/* when (bit0==1) use logical geom */
+	unsigned short	field_valid;	/* bits 0:cur_ok 1:eide_ok */
 	unsigned short	cur_cyls;	/* logical cylinders */
 	unsigned short	cur_heads;	/* logical heads */
 	unsigned short	cur_sectors;	/* logical sectors per track */
@@ -114,7 +114,14 @@ struct hd_driveid {
 	unsigned int	lba_capacity;	/* total number of sectors */
 	unsigned short	dma_1word;	/* single-word dma info */
 	unsigned short	dma_mword;	/* multiple-word dma info */
-	/* unsigned short reserved2[64];*/	/* reserved */
-	/* unsigned short vendor7  [32];*/	/* vendor unique */
-	/* unsigned short reserved3[96];*/	/* reserved */
+	unsigned short  eide_pio_modes; /* bits 0:mode3 1:mode4 */
+	unsigned short  eide_dma_min;	/* min mword dma cycle time (ns) */
+	unsigned short  eide_dma_time;	/* recommended mword dma cycle time (ns) */
+	unsigned short  eide_pio;       /* min cycle time (ns), no IORDY  */
+	unsigned short  eide_pio_iordy; /* min cycle time (ns), with IORDY */
+	unsigned short  reserved69;	/* reserved (word 69) */
+	unsigned short  reserved70;	/* reserved (word 70) */
+	/* unsigned short reservedxx[57];*/	/* reserved (words 71-127) */
+	/* unsigned short vendor7  [32];*/	/* vendor unique (words 128-159) */
+	/* unsigned short reservedyy[96];*/	/* reserved (words 160-255) */
 };

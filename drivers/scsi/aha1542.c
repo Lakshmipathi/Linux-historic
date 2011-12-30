@@ -194,7 +194,7 @@ static int makecode(unsigned hosterr, unsigned scsierr)
 	break;
 
       case 0x12: /* Data overrun/underrun-The target attempted to transfer more data
-		    thean was allocated by the Data Length field or the sum of the
+		    than was allocated by the Data Length field or the sum of the
 		    Scatter / Gather Data Length fields. */
 
       case 0x13: /* Unexpected bus free-The target dropped the SCSI BSY at an unexpected time. */
@@ -247,7 +247,7 @@ static int aha1542_test_port(int bse, struct Scsi_Host * shpnt)
     /* Quick and dirty test for presence of the card. */
     if(inb(STATUS(bse)) == 0xff) return 0;
 
-    /* Reset the adapter. I ought to make a hard reset, but it's not really nessesary */
+    /* Reset the adapter. I ought to make a hard reset, but it's not really necessary */
     
     /*  DEB(printk("aha1542_test_port called \n")); */
 
@@ -876,7 +876,7 @@ int aha1542_detect(Scsi_Host_Template * tpnt)
 		    }
 		    
 		    if (dma_chan != 0xFF) {
-			    if (request_dma(dma_chan)) {
+			    if (request_dma(dma_chan,"aha1542")) {
 				    printk("Unable to allocate DMA channel for Adaptec.\n");
 				    free_irq(irq_level);
 				    goto unregister;

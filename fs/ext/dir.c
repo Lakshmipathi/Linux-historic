@@ -64,14 +64,15 @@ struct inode_operations ext_dir_inode_operations = {
 static int ext_readdir(struct inode * inode, struct file * filp,
 	struct dirent * dirent, int count)
 {
-	unsigned int offset,i;
+	unsigned int i;
+	off_t offset;
 	char c;
 	struct buffer_head * bh;
 	struct ext_dir_entry * de;
 
 	if (!inode || !S_ISDIR(inode->i_mode))
 		return -EBADF;
-	if (filp->f_pos % 8 != 0)
+	if ((filp->f_pos & 7) != 0)
 		return -EBADF;
 	while (filp->f_pos < inode->i_size) {
 		offset = filp->f_pos & 1023;
@@ -84,9 +85,9 @@ static int ext_readdir(struct inode * inode, struct file * filp,
 		while (offset < 1024 && filp->f_pos < inode->i_size) {
 			if (de->rec_len < 8 || de->rec_len % 8 != 0 ||
 			    de->rec_len < de->name_len + 8 ||
-			    (de->rec_len + filp->f_pos - 1) / 1024 > (filp->f_pos / 1024)) {
+			    (de->rec_len + (off_t) filp->f_pos - 1) / 1024 > ((off_t) filp->f_pos / 1024)) {
 				printk ("ext_readdir: bad dir entry, skipping\n");
-				printk ("dev=%d, dir=%d, offset=%d, rec_len=%d, name_len=%d\n",
+				printk ("dev=%d, dir=%ld, offset=%ld, rec_len=%d, name_len=%d\n",
 					inode->i_dev, inode->i_ino, offset, de->rec_len, de->name_len);
 				filp->f_pos += 1024-offset;
 				if (filp->f_pos > inode->i_size)

@@ -280,9 +280,9 @@ unsigned long swap_in(unsigned long entry)
 	}
 	read_swap_page(entry, (char *) page);
 	if (add_to_swap_cache(page, entry))
-		return page | PAGE_PRIVATE;
+		return page | PAGE_PRESENT;
   	swap_free(entry);
-	return page | PAGE_DIRTY | PAGE_PRIVATE;
+	return page | PAGE_DIRTY | PAGE_PRESENT;
 }
 
 static inline int try_to_swap_out(unsigned long * table_ptr)
@@ -618,8 +618,8 @@ unsigned long __get_free_pages(int priority, unsigned long order)
 	if (intr_count && priority != GFP_ATOMIC) {
 		static int count = 0;
 		if (++count < 5) {
-			printk("gfp called nonatomically from interrupt %08lx\n",
-				((unsigned long *)&priority)[-1]);
+			printk("gfp called nonatomically from interrupt %p\n",
+				__builtin_return_address(0));
 			priority = GFP_ATOMIC;
 		}
 	}

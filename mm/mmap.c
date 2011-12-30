@@ -245,6 +245,8 @@ void unmap_fixup(struct vm_area_struct *area,
 		/* Add end mapping -- leave beginning for below */
 		mpnt = (struct vm_area_struct *)kmalloc(sizeof(*mpnt), GFP_KERNEL);
 
+		if (!mpnt)
+			return;
 		*mpnt = *area;
 		mpnt->vm_offset += (end - area->vm_start);
 		mpnt->vm_start = end;
@@ -256,6 +258,8 @@ void unmap_fixup(struct vm_area_struct *area,
 
 	/* construct whatever mapping is needed */
 	mpnt = (struct vm_area_struct *)kmalloc(sizeof(*mpnt), GFP_KERNEL);
+	if (!mpnt)
+		return;
 	*mpnt = *area;
 	insert_vm_struct(current, mpnt);
 }
@@ -424,6 +428,13 @@ void merge_segments(struct vm_area_struct *mpnt)
 		 */
 		prev->vm_end = mpnt->vm_end;
 		prev->vm_next = mpnt->vm_next;
+		if (mpnt->vm_ops && mpnt->vm_ops->close) {
+			mpnt->vm_offset += mpnt->vm_end - mpnt->vm_start;
+			mpnt->vm_start = mpnt->vm_end;
+			mpnt->vm_ops->close(mpnt);
+		}
+		if (mpnt->vm_inode)
+			mpnt->vm_inode->i_count--;
 		kfree_s(mpnt, sizeof(*mpnt));
 		mpnt = prev;
 	}

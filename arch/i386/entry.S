@@ -1,11 +1,11 @@
 /*
- *  linux/kernel/sys_call.S
+ *  linux/arch/i386/entry.S
  *
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
 /*
- * sys_call.S  contains the system-call and fault low-level handling routines.
+ * entry.S contains the system-call and fault low-level handling routines.
  * This also contains the timer-interrupt handler, as well as all interrupts
  * and faults that can result in a task-switch.
  *
@@ -540,5 +540,5 @@ _sys_call_table:
 	.long 0				/* for afs_syscall */
 	.long _sys_setfsuid
 	.long _sys_setfsgid
-
-	.space (NR_syscalls-137)*4
+	.long _sys_llseek		/* 140 */
+	.space (NR_syscalls-140)*4

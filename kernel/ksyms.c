@@ -10,6 +10,7 @@
 #include <linux/autoconf.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
+#include <linux/blkdev.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/malloc.h>
@@ -41,7 +42,7 @@ extern char * ftape_big_buffer;
 extern void (*do_floppy)(void);
 #endif
 
-extern int request_dma(unsigned int dmanr);
+extern int request_dma(unsigned int dmanr, char * deviceID);
 extern void free_dma(unsigned int dmanr);
 
 extern int do_execve(char * filename, char ** argv, char ** envp,
@@ -91,6 +92,14 @@ struct symbol_table symbol_table = { 0, 0, 0, /* for stacked module support */
 	X(register_blkdev),
 	X(unregister_blkdev),
 
+	/* block device driver support */
+	X(block_read),
+	X(block_write),
+	X(block_fsync),
+	X(wait_for_request),
+	X(blksize_size),
+	X(blk_dev),
+	
 	/* Module creation of serial units */
 	X(register_serial),
 	X(unregister_serial),
@@ -174,7 +183,6 @@ struct symbol_table symbol_table = { 0, 0, 0, /* for stacked module support */
 	X(dev_rint),
 	X(dev_tint),
 	X(irq2dev_map),
-	X(dev_kfree_skb),
 #endif
 
 	/********************************************************

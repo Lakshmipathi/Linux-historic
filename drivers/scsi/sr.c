@@ -327,7 +327,7 @@ static void do_sr_request (void)
    accept another command.  If we find one, then we queue it. This can
    make a big difference on systems with more than one disk drive.  We want
    to have the interrupts off when monkeying with the request list, because
-   otherwise the kernel might try and slip in a request inbetween somewhere. */
+   otherwise the kernel might try and slip in a request in between somewhere. */
 
     if (!SCpnt && sr_template.nr_dev > 1){
       struct request *req1;
@@ -627,7 +627,20 @@ are any multiple of 512 bytes long.  */
 	  printk("\n");
 	};
 #endif
-	
+
+/* Some dumb host adapters can speed transfers by knowing the
+ * minimum transfersize in advance.
+ *
+ * We shouldn't disconnect in the middle of a sector, but the cdrom
+ * sector size can be larger than the size of a buffer and the
+ * transfer may be split to the size of a buffer.  So it's safe to
+ * assume that we can at least transfer the minimum of the buffer
+ * size (1024) and the sector size between each connect / disconnect.
+ */
+
+        SCpnt->transfersize = (scsi_CDs[dev].sector_size > 1024) ?
+                        1024 : scsi_CDs[dev].sector_size;
+
 	SCpnt->this_count = this_count;
 	scsi_do_cmd (SCpnt, (void *) cmd, buffer, 
 		     realcount * scsi_CDs[dev].sector_size, 
@@ -641,7 +654,7 @@ static int sr_detect(Scsi_Device * SDp){
   if(SDp->type != TYPE_ROM && SDp->type != TYPE_WORM) return 0;
 
   printk("Detected scsi CD-ROM sr%d at scsi%d, id %d, lun %d\n", 
-	 ++sr_template.dev_noticed,
+	 sr_template.dev_noticed++,
 	 SDp->host->host_no , SDp->id, SDp->lun); 
 
 	 return 1;

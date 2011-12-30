@@ -35,6 +35,7 @@
 #include <linux/genhd.h>
 #include <linux/config.h>
 #include <linux/malloc.h>
+#include <linux/string.h>
 
 #define REALLY_SLOW_IO
 #include <asm/system.h>
@@ -79,7 +80,7 @@ static int hd_error = 0;
 struct hd_i_struct {
 	unsigned int head,sect,cyl,wpcom,lzone,ctl;
 	};
-static struct hd_driveid *hd_ident_info[MAX_HD];
+static struct hd_driveid *hd_ident_info[MAX_HD] = {0, };
 	
 #ifdef HD_TYPE
 static struct hd_i_struct hd_info[] = { HD_TYPE };
@@ -211,7 +212,7 @@ static void hd_out(unsigned int drive,unsigned int nsect,unsigned int sect,
 	if (reset)
 		return;
 	if (!controller_ready(drive, head)) {
-		special_op[drive] += reset = 1;
+		reset = 1;
 		return;
 	}
 	SET_INTR(intr_addr);
@@ -234,16 +235,39 @@ static unsigned int mult_req    [MAX_HD] = {0,}; /* requested MultMode count    
 static unsigned int mult_count  [MAX_HD] = {0,}; /* currently enabled MultMode count */
 static struct request WCURRENT;
 
-static void rawstring (char *prefix, unsigned char *s, int n)
+static void fixstring(unsigned char *s, int n)
 {
-	if (prefix)
-		printk(prefix);
-	if (s && *s) {
-		int i;
-		for (i=0; i < n && s[i^1] == ' '; ++i); /* skip blanks */
-		for (; i < n && s[i^1]; ++i)		/* flip bytes */
-			if (s[i^1] != ' ' || ((i+1) < n && s[(i+1)^1] != ' '))
-				printk("%c",s[i^1]);
+	int i;
+	unsigned short *ss = (unsigned short *) s;
+
+	/* convert from big-endian to little-endian */
+	for (i = n ; (i -= 2) >= 0 ; ss++)
+		*ss = (*ss >> 8) | (*ss << 8);
+
+	/* "strnlen()" */
+	for (i = 0 ; i < n ; i++) {
+		if (!s[i]) {
+			n = i;
+			break;
+		}
+	}
+
+	/* wipe out trailing spaces */
+	while (n > 0) {
+		if (s[n-1] != ' ')
+			break;
+		n--;
+		s[n] = '\0';
+	}
+
+	/* wipe out leading spaces */
+	if (*s == ' ') {
+		unsigned char *t = s;
+		while (n-- && *++s == ' ');
+		while (n-- >= 0) {
+			*t++ = *s;
+			*s++ = '\0';
+		}
 	}
 }
 
@@ -251,16 +275,21 @@ static void identify_intr(void)
 {
 	unsigned int dev = DEVICE_NR(CURRENT->dev);
 	unsigned short stat = inb_p(HD_STATUS);
-	struct hd_driveid id;
+	struct hd_driveid *id = hd_ident_info[dev];
 
 	if (unmask_intr[dev])
 		sti();
-	if (stat & (BUSY_STAT|ERR_STAT))
-		printk ("  hd%c: identity unknown\n", dev+'a');
-	else {
-		insw(HD_DATA, (char *)&id, sizeof(id)/2); /* get ID bytes */
-		max_mult[dev] = id.max_multsect;
-		if ((id.cur_valid&1) && id.cur_cyls && id.cur_heads && (id.cur_heads <= 16) && id.cur_sectors) {
+	if (stat & (BUSY_STAT|ERR_STAT)) {
+		printk ("  hd%c: non-IDE device, CHS=%d%d%d\n", dev+'a',
+			hd_info[dev].cyl, hd_info[dev].head, hd_info[dev].sect);
+		if (id != NULL) {
+			hd_ident_info[dev] = NULL;
+			kfree_s (id, 512);
+		}
+	} else {
+		insw(HD_DATA, id, 256); /* get ID info */
+		max_mult[dev] = id->max_multsect;
+		if ((id->field_valid&1) && id->cur_cyls && id->cur_heads && (id->cur_heads <= 16) && id->cur_sectors) {
 			/*
 			 * Extract the physical drive geometry for our use.
 			 * Note that we purposely do *not* update the bios_info.
@@ -268,23 +297,24 @@ static void identify_intr(void)
 			 * still have the same logical view as the BIOS does,
 			 * which keeps the partition table from being screwed.
 			 */
-			hd_info[dev].cyl  = id.cur_cyls;
-			hd_info[dev].head = id.cur_heads;
-			hd_info[dev].sect = id.cur_sectors; 
+			hd_info[dev].cyl  = id->cur_cyls;
+			hd_info[dev].head = id->cur_heads;
+			hd_info[dev].sect = id->cur_sectors; 
 		}
-		printk ("  hd%c: ", dev+'a');
-		rawstring(NULL, id.model, sizeof(id.model));
-		printk (", %dMB w/%dKB Cache, CHS=%d/%d/%d, MaxMult=%d\n",
-			id.cyls*id.heads*id.sectors/2048, id.buf_size/2,
-			hd_info[dev].cyl, hd_info[dev].head, hd_info[dev].sect, id.max_multsect);
-		/* save drive info for later query via HDIO_GETIDENTITY */
-		if (NULL != (hd_ident_info[dev] = (struct hd_driveid *)kmalloc(sizeof(id),GFP_ATOMIC)))
-			*hd_ident_info[dev] = id;
-		
-		/* flush remaining 384 (reserved/undefined) ID bytes: */
-		insw(HD_DATA,(char *)&id,sizeof(id)/2);
-		insw(HD_DATA,(char *)&id,sizeof(id)/2);
-		insw(HD_DATA,(char *)&id,sizeof(id)/2);
+		fixstring (id->serial_no, sizeof(id->serial_no));
+		fixstring (id->fw_rev, sizeof(id->fw_rev));
+		fixstring (id->model, sizeof(id->model));
+		printk ("  hd%c: %.40s, %dMB w/%dKB Cache, CHS=%d/%d/%d, MaxMult=%d\n",
+			dev+'a', id->model, id->cyls*id->heads*id->sectors/2048,
+			id->buf_size/2, hd_info[dev].cyl, hd_info[dev].head,
+			hd_info[dev].sect, id->max_multsect);
+		/*
+		 * Early model Quantum drives go weird at this point,
+		 *   but doing a recalibrate seems to "fix" them.
+		 * (Doing a full reset confuses some newer model Quantums)
+		 */
+		if (!strncmp(id->model, "QUANTUM", 7))
+			special_op[dev] = recalibrate[dev] = 1;
 	}
 #if (HD_DELAY > 0)
 	last_req = read_timer();
@@ -335,10 +365,10 @@ static void reset_controller(void)
 {
 	int	i;
 
-	printk(KERN_DEBUG "HD-controller reset\n");
 	outb_p(4,HD_CMD);
 	for(i = 0; i < 1000; i++) nop();
-	outb(hd_info[0].ctl & 0x0f ,HD_CMD);
+	outb_p(hd_info[0].ctl & 0x0f,HD_CMD);
+	for(i = 0; i < 1000; i++) nop();
 	if (drive_busy())
 		printk("HD-controller still busy\n");
 	if ((hd_error = inb(HD_ERROR)) != 1)
@@ -361,12 +391,15 @@ repeat:
 	}
 	if (++i < NR_HD) {
 		if (unmask_intr[i]) {
-			printk("hd%c: disabled irq-unmasking\n",i+'a');
-			unmask_intr[i] = 0;
+			unmask_intr[i] = DEFAULT_UNMASK_INTR;
+			printk("hd%c: reset irq-unmasking to %d\n",i+'a',
+				DEFAULT_UNMASK_INTR);
 		}
 		if (mult_req[i] || mult_count[i]) {
-			printk("hd%c: disabled multiple mode\n",i+'a');
-			mult_req[i] = mult_count[i] = 0;
+			mult_count[i] = 0;
+			mult_req[i] = DEFAULT_MULT_COUNT;
+			printk("hd%c: reset multiple mode to %d\n",i+'a',
+				DEFAULT_MULT_COUNT);
 		}
 		hd_out(i,hd_info[i].sect,hd_info[i].sect,hd_info[i].head-1,
 			hd_info[i].cyl,WIN_SPECIFY,&reset_hd);
@@ -399,12 +432,12 @@ static void bad_rw_intr(void)
 
 	if (!CURRENT)
 		return;
-	dev = MINOR(CURRENT->dev) >> 6;
+	dev = DEVICE_NR(CURRENT->dev);
 	if (++CURRENT->errors >= MAX_ERRORS || (hd_error & BBD_ERR)) {
 		end_request(0);
 		special_op[dev] += recalibrate[dev] = 1;
 	} else if (CURRENT->errors % RESET_FREQ == 0)
-		special_op[dev] += reset = 1;
+		reset = 1;
 	else if ((hd_error & TRK0_ERR) || CURRENT->errors % RECAL_FREQ == 0)
 		special_op[dev] += recalibrate[dev] = 1;
 	/* Otherwise just retry */
@@ -446,6 +479,7 @@ static void read_intr(void)
 		printk("hd%c: read_intr: error = 0x%02x\n",dev+'a',hd_error);
 	}
 	bad_rw_intr();
+	cli();
 	hd_request();
 	return;
 ok_to_read:
@@ -538,6 +572,7 @@ static void multwrite_intr(void)
 		printk("hd:%c multwrite_intr: error = 0x%02x\n",dev+'a',hd_error);
 	}
 	bad_rw_intr();
+	cli();
 	hd_request();
 }
 
@@ -564,6 +599,7 @@ static void write_intr(void)
 		printk("HD: write_intr: error = 0x%02x\n",hd_error);
 	}
 	bad_rw_intr();
+	cli();
 	hd_request();
 	return;
 ok_to_write:
@@ -604,10 +640,9 @@ static void hd_times_out(void)
 {
 	DEVICE_INTR = NULL;
 	sti();
-	reset = 1;
 	if (!CURRENT)
 		return;
-	special_op [DEVICE_NR(CURRENT->dev)] ++;
+	reset = 1;
 	printk(KERN_DEBUG "HD timeout\n");
 	cli();
 	if (++CURRENT->errors >= MAX_ERRORS) {
@@ -664,16 +699,16 @@ repeat:
 #endif
 	if (!unmask_intr[dev])
 		cli();
+	if (reset) {
+		int i;
+
+		for (i=0; i < NR_HD; i++)
+			special_op[i] = recalibrate[i] = 1;
+		cli(); /* better play it safe, as resets are the last resort */
+		reset_hd();
+		return;
+	}
 	if (special_op[dev]) {	/* we use "special_op" to reduce overhead on r/w */
-		if (reset) {
-			int i;
-	
-			for (i=0; i < NR_HD; i++)
-				special_op[i] = recalibrate[i] = 1;
-			cli(); /* better play it safe, as resets are the last resort */
-			reset_hd();
-			return;
-		}
 		if (recalibrate[dev]) {
 			recalibrate[dev] = 0;
 			hd_out(dev,hd_info[dev].sect,0,0,0,WIN_RESTORE,&recal_intr);
@@ -758,7 +793,7 @@ static int hd_ioctl(struct inode * inode, struct file * file,
 
 	if ((!inode) || (!inode->i_rdev))
 		return -EINVAL;
-	dev = MINOR(inode->i_rdev) >> 6;
+	dev = DEVICE_NR(inode->i_rdev);
 	if (dev >= NR_HD)
 		return -EINVAL;
 	switch (cmd) {
@@ -863,6 +898,7 @@ static int hd_ioctl(struct inode * inode, struct file * file,
 			if (err)
 				return err;
 			memcpy_tofs((char *)arg, (char *) hd_ident_info[dev], sizeof(struct hd_driveid));
+			return 0;
 
 		RO_IOCTLS(inode->i_rdev,arg);
 		default:
@@ -873,7 +909,7 @@ static int hd_ioctl(struct inode * inode, struct file * file,
 static int hd_open(struct inode * inode, struct file * filp)
 {
 	int target;
-	target =  DEVICE_NR(MINOR(inode->i_rdev));
+	target =  DEVICE_NR(inode->i_rdev);
 
 	while (busy[target])
 		sleep_on(&busy_wait);
@@ -890,7 +926,7 @@ static void hd_release(struct inode * inode, struct file * file)
         int target;
 	sync_dev(inode->i_rdev);
 
-	target =  DEVICE_NR(MINOR(inode->i_rdev));
+	target =  DEVICE_NR(inode->i_rdev);
 	access_count[target]--;
 
 }
@@ -1002,7 +1038,7 @@ static void hd_geninit(void)
 		}
 		hd[i<<6].nr_sects = bios_info[i].head *
 				bios_info[i].sect * bios_info[i].cyl;
-		hd_ident_info[i] = NULL;
+		hd_ident_info[i] = (struct hd_driveid *) kmalloc(512,GFP_KERNEL);
 		special_op[i] = 1;
 	}
 	if (NR_HD) {
@@ -1069,7 +1105,7 @@ static int revalidate_hddisk(int dev, int maxusage)
 	int i;
 	long flags;
 
-	target =  DEVICE_NR(MINOR(dev));
+	target =  DEVICE_NR(dev);
 	gdev = &GENDISK_STRUCT;
 
 	save_flags(flags);
