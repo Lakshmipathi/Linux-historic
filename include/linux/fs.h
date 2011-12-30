@@ -158,10 +158,13 @@ struct buffer_head {
 #include <linux/ext2_fs_i.h>
 #include <linux/hpfs_fs_i.h>
 #include <linux/msdos_fs_i.h>
+#include <linux/umsdos_fs_i.h>
 #include <linux/iso_fs_i.h>
 #include <linux/nfs_fs_i.h>
 #include <linux/xia_fs_i.h>
 #include <linux/sysv_fs_i.h>
+
+#ifdef __KERNEL__
 
 struct inode {
 	dev_t		i_dev;
@@ -203,6 +206,7 @@ struct inode {
 		struct ext2_inode_info ext2_i;
 		struct hpfs_inode_info hpfs_i;
 		struct msdos_inode_info msdos_i;
+		struct umsdos_inode_info umsdos_i;
 		struct iso_inode_info isofs_i;
 		struct nfs_inode_info nfs_i;
 		struct xiafs_inode_info xiafs_i;
@@ -313,6 +317,7 @@ struct inode_operations {
 	int (*bmap) (struct inode *,int);
 	void (*truncate) (struct inode *);
 	int (*permission) (struct inode *, int);
+	int (*smap) (struct inode *,int);
 };
 
 struct super_operations {
@@ -332,8 +337,6 @@ struct file_system_type {
 	int requires_dev;
 	struct file_system_type * next;
 };
-
-#ifdef __KERNEL__
 
 extern int register_filesystem(struct file_system_type *);
 extern int unregister_filesystem(struct file_system_type *);
@@ -444,7 +447,7 @@ extern void ll_rw_swap_file(int rw, int dev, unsigned int *b, int nb, char *buff
 extern void brelse(struct buffer_head * buf);
 extern void set_blocksize(dev_t dev, int size);
 extern struct buffer_head * bread(dev_t dev, int block, int size);
-extern unsigned long bread_page(unsigned long addr,dev_t dev,int b[],int size,int share);
+extern unsigned long bread_page(unsigned long addr,dev_t dev,int b[],int size,int no_share);
 extern struct buffer_head * breada(dev_t dev,int block, int size, 
 				   unsigned int pos, unsigned int filesize);
 extern void put_super(dev_t dev);
